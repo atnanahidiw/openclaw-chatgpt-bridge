@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bridge-config
+  namespace: openclaw-bridge
+data:
+  PORT: "8080"
+  ADDR: ":8080"
+  REQUEST_TIMEOUT_MS: "30000"
+  MAX_BODY_BYTES: "1048576"
+  OPENCLAW_SESSION_KEY: "agent:main:main"

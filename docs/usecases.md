@@ -7,6 +7,8 @@ It is useful when a user wants to describe work in ChatGPT, then hand that work 
 The bridge is not limited to coding. Coding is only one example. The main value is delegation: ChatGPT becomes the place where the user explains the task, reviews progress, asks follow-up questions, and receives the final result.
 
 ## 1. Software and DevOps work
+<details>
+<summary>Show details</summary>
 
 ### Work the user is doing
 
@@ -58,140 +60,12 @@ Good examples:
 - review Kubernetes networking assumptions
 - update OpenAPI examples
 - write troubleshooting docs based on real behavior
+</details>
 
-## 2. Product and project management
+## 2. Research, grants, and analysis
+<details>
+<summary>Show details</summary>
 
-### Work the user is doing
-
-A product manager, founder, or team lead needs to turn scattered ideas into a structured plan. The work may include writing requirements, converting meeting notes into tasks, checking project status, or preparing a delivery plan.
-
-This is common in small teams where one person needs to switch between planning, coordination, and execution.
-
-### How the bridge helps
-
-The user can describe the project goal in ChatGPT, then ask OpenClaw to inspect the project repository, docs, issue tracker, or workspace.
-
-Example:
-
-~~~json
-{
-  "action": "create_flow",
-  "goal": "Review the current project docs and produce a realistic implementation plan for the next release."
-}
-~~~
-
-Follow-up:
-
-~~~json
-{
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Separate the plan into must-have, should-have, and later items. Highlight anything blocked by missing information."
-}
-~~~
-
-### Why this is useful
-
-Many project plans fail because they are written without checking the actual repo, docs, deployment state, or constraints. This bridge lets the user combine conversation with real inspection.
-
-Good examples:
-
-- convert a rough idea into an implementation checklist
-- review whether docs match actual behavior
-- prepare release notes from recent changes
-- check whether a feature is ready to ship
-- turn a support issue into engineering tasks
-- summarize blockers before a team meeting
-
-## 3. Operations and internal admin
-
-### Work the user is doing
-
-An operations team handles repetitive internal work: checking forms, updating documents, preparing reports, reconciling lists, verifying process steps, or creating standard operating procedures.
-
-This work is often not complex, but it is time-consuming and easy to get wrong when details are scattered across files.
-
-### How the bridge helps
-
-The user can ask ChatGPT to coordinate the task, while OpenClaw reads or updates the connected workspace.
-
-Example:
-
-~~~json
-{
-  "action": "create_flow",
-  "goal": "Review the onboarding checklist and identify missing steps for a new contractor setup."
-}
-~~~
-
-Follow-up:
-
-~~~json
-{
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Draft an updated checklist with owner, input, output, and verification step for each item."
-}
-~~~
-
-### Why this is useful
-
-The user can keep the work traceable. ChatGPT can explain what changed, and OpenClaw can perform the actual document or file updates.
-
-Good examples:
-
-- update an onboarding checklist
-- review internal SOPs
-- prepare weekly operations summaries
-- check whether required documents are complete
-- clean up repeated template errors
-- turn messy notes into a structured process
-
-## 4. Sales and customer support
-
-### Work the user is doing
-
-A sales or support team needs to understand customer requests, summarize issues, prepare replies, update knowledge base docs, or convert repeated complaints into product feedback.
-
-This work often lives across chats, tickets, notes, and documents.
-
-### How the bridge helps
-
-The user can ask ChatGPT to create a flow that reviews customer-facing material or ticket summaries, then produces structured output.
-
-Example:
-
-~~~json
-{
-  "action": "create_flow",
-  "goal": "Review recent customer support notes and identify repeated issues that should become documentation or product fixes."
-}
-~~~
-
-Follow-up:
-
-~~~json
-{
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Group the issues by cause, affected user type, suggested reply, and whether engineering follow-up is needed."
-}
-~~~
-
-### Why this is useful
-
-Support work improves when repeated issues become reusable answers or real product fixes.
-
-Good examples:
-
-- summarize support tickets
-- draft FAQ updates
-- prepare customer reply templates
-- identify repeated bugs from complaints
-- turn user feedback into product tasks
-- review whether docs answer common questions
-
-## 5. Research, grants, and analysis
 
 ### Work the user is doing
 
@@ -235,6 +109,148 @@ Good examples:
 - map evidence to requirements
 - identify missing evidence
 - prepare a decision memo
+</details>
+
+## 3. Product and project management
+<details>
+<summary>Show details</summary>
+
+### Work the user is doing
+
+A product manager, founder, or team lead needs to turn scattered ideas into a structured plan. The work may include writing requirements, converting meeting notes into tasks, checking project status, or preparing a delivery plan.
+
+This is common in small teams where one person needs to switch between planning, coordination, and execution.
+
+### How the bridge helps
+
+The user can describe the project goal in ChatGPT, then ask OpenClaw to inspect the project repository, docs, issue tracker, or workspace.
+
+Example:
+
+~~~json
+{
+  "action": "create_flow",
+  "goal": "Review the current project docs and produce a realistic implementation plan for the next release."
+}
+~~~
+
+Follow-up:
+
+~~~json
+{
+  "action": "run_task",
+  "flowId": "flow_123",
+  "task": "Separate the plan into must-have, should-have, and later items. Highlight anything blocked by missing information."
+}
+~~~
+
+### Why this is useful
+
+Many project plans fail because they are written without checking the actual repo, docs, deployment state, or constraints. This bridge lets the user combine conversation with real inspection.
+
+Good examples:
+
+- convert a rough idea into an implementation checklist
+- review whether docs match actual behavior
+- prepare release notes from recent changes
+- check whether a feature is ready to ship
+- turn a support issue into engineering tasks
+- summarize blockers before a team meeting
+</details>
+
+## 4. Operations and internal admin
+<details>
+<summary>Show details</summary>
+
+### Work the user is doing
+
+An operations team handles repetitive internal work: checking forms, updating documents, preparing reports, reconciling lists, verifying process steps, or creating standard operating procedures.
+
+This work is often not complex, but it is time-consuming and easy to get wrong when details are scattered across files.
+
+### How the bridge helps
+
+The user can ask ChatGPT to coordinate the task, while OpenClaw reads or updates the connected workspace.
+
+Example:
+
+~~~json
+{
+  "action": "create_flow",
+  "goal": "Review the onboarding checklist and identify missing steps for a new contractor setup."
+}
+~~~
+
+Follow-up:
+
+~~~json
+{
+  "action": "run_task",
+  "flowId": "flow_123",
+  "task": "Draft an updated checklist with owner, input, output, and verification step for each item."
+}
+~~~
+
+### Why this is useful
+
+The user can keep the work traceable. ChatGPT can explain what changed, and OpenClaw can perform the actual document or file updates.
+
+Good examples:
+
+- update an onboarding checklist
+- review internal SOPs
+- prepare weekly operations summaries
+- check whether required documents are complete
+- clean up repeated template errors
+- turn messy notes into a structured process
+</details>
+
+## 5. Sales and customer support
+<details>
+<summary>Show details</summary>
+
+### Work the user is doing
+
+A sales or support team needs to understand customer requests, summarize issues, prepare replies, update knowledge base docs, or convert repeated complaints into product feedback.
+
+This work often lives across chats, tickets, notes, and documents.
+
+### How the bridge helps
+
+The user can ask ChatGPT to create a flow that reviews customer-facing material or ticket summaries, then produces structured output.
+
+Example:
+
+~~~json
+{
+  "action": "create_flow",
+  "goal": "Review recent customer support notes and identify repeated issues that should become documentation or product fixes."
+}
+~~~
+
+Follow-up:
+
+~~~json
+{
+  "action": "run_task",
+  "flowId": "flow_123",
+  "task": "Group the issues by cause, affected user type, suggested reply, and whether engineering follow-up is needed."
+}
+~~~
+
+### Why this is useful
+
+Support work improves when repeated issues become reusable answers or real product fixes.
+
+Good examples:
+
+- summarize support tickets
+- draft FAQ updates
+- prepare customer reply templates
+- identify repeated bugs from complaints
+- turn user feedback into product tasks
+- review whether docs answer common questions
+</details>
 
 ## When this bridge is a good fit
 

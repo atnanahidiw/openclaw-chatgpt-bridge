@@ -1,0 +1,122 @@
+openapi: 3.1.0
+info:
+  title: OpenClaw ChatGPT Bridge
+  version: 1.0.0
+  description: >
+    OpenAPI schema for a Custom GPT Action that calls the bridge service.
+servers:
+  - url: https://bridge.example.com
+paths:
+  /v1/openclaw:
+    post:
+      operationId: sendToOpenClawBridge
+      summary: Send a task to the OpenClaw bridge
+      description: The bridge validates the request and forwards it to OpenClaw.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - action
+              properties:
+                action:
+                  type: string
+                  enum:
+                    - create_flow
+                    - run_task
+                    - get_flow
+                    - resume_flow
+                    - finish_flow
+                  description: >
+                    OpenClaw operation to perform. create_flow creates a new flow.
+                    run_task sends work to an existing flow. get_flow checks status.
+                    resume_flow resumes a paused flow. finish_flow closes a flow.
+                flowId:
+                  type: string
+                  description: >
+                    Existing OpenClaw flow ID. Required for get_flow, resume_flow,
+                    and finish_flow. Usually required for run_task when continuing
+                    an existing flow.
+                sessionKey:
+                  type: string
+                  description: OpenClaw session key or route key.
+                goal:
+                  type: string
+                  description: Human-readable project goal.
+                task:
+                  type: string
+                  description: >
+                    Instruction or message to send to OpenClaw. Required for run_task.
+                goal:
+                  type: string
+                  description: >
+                    Human-readable project goal. Required for create_flow.
+                status:
+                  type: string
+                  description: Optional status hint.
+                notifyPolicy:
+                  type: string
+                  enum:
+                    - done_only
+                    - all_events
+                    - silent
+                  default: done_only
+                  description: >
+                    Notification behavior. done_only sends only final updates.
+                    all_events sends progress events. silent suppresses notifications.
+                metadata:
+                  type: object
+                  additionalProperties: true
+            examples:
+              createFlow:
+                summary: Create a new OpenClaw flow
+                value:
+                  action: create_flow
+                  goal: Check the deployment status and summarize any errors.
+                  sessionKey: agent:main:chatgpt
+                  notifyPolicy: done_only
+              runTask:
+                summary: Run a task in an existing flow
+                value:
+                  action: run_task
+                  flowId: flow_123
+                  task: Continue from the last result and inspect the failed pod logs.
+                  notifyPolicy: all_events
+              getFlow:
+                summary: Get flow status
+                value:
+                  action: get_flow
+                  flowId: flow_123
+              resumeFlow:
+                summary: Resume a paused flow
+                value:
+                  action: resume_flow
+                  flowId: flow_123
+                  task: Resume and apply the suggested fix.
+                  notifyPolicy: done_only
+              finishFlow:
+                summary: Finish a flow
+                value:
+                  action: finish_flow
+                  flowId: flow_123
+      responses:
+        "200":
+          description: Bridge accepted and processed the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  ok:
+                    type: boolean
+                  bridge:
+                    type: string
+                  upstreamStatus:
+                    type: integer
+                  upstreamBody:
+                    type: object
+                    additionalProperties: true

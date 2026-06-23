@@ -1,18 +1,55 @@
 # Troubleshooting
 
+This page explains the most common problems in simple language.
+
 ## `go test` fails
 
-Check Node first:
+### What to check first
+
+Run:
 
 ```bash
 go version
 ```
 
-Need Go 1.22 or newer.
+You need **Go 1.22 or newer**.
 
-## Bridge returns `OPENCLAW_WEBHOOK_URL is not set`
+If Go is missing, install it before trying again.
 
-Set the env var in `.env` or Kubernetes.
+---
+
+## `OPENCLAW_WEBHOOK_URL is not set`
+
+This means the bridge does not know where to send requests.
+
+### Fix
+
+Set this in `.env` or in your deployment config:
+
+```bash
+OPENCLAW_WEBHOOK_URL=http://your-openclaw-address/plugins/webhooks/gpt
+```
+
+If OpenClaw is private, use the Tailscale hostname or IP.
+
+---
+
+## `create_flow` says `goal is required`
+
+This usually means the request used the wrong field.
+
+### Correct example
+
+```json
+{
+  "action": "create_flow",
+  "goal": "Build a UMKM finance app MVP"
+}
+```
+
+For `create_flow`, use `goal`, not `task`.
+
+---
 
 ## Validation errors
 
@@ -23,20 +60,17 @@ Common causes:
 - `run_task` without `flowId`
 - `run_task` without `task`
 
-## `create_flow` returns `goal is required`
+### What to do
 
-Use `goal` for `create_flow`, not `task`.
+Check the JSON you send to `/v1/openclaw` and make sure the required fields are present.
 
-```json
-{
-  "action": "create_flow",
-  "goal": "Build a UMKM finance app MVP"
-}
-```
+---
 
-## OpenClaw non-2xx errors
+## OpenClaw returns a non-2xx status
 
-The bridge returns the upstream status and body:
+This means the bridge reached OpenClaw, but OpenClaw said “no”.
+
+### Example response
 
 ```json
 {
@@ -49,36 +83,67 @@ The bridge returns the upstream status and body:
 }
 ```
 
-## Bridge returns timeout
+### Common reasons
 
-Likely causes:
+- wrong `OPENCLAW_WEBHOOK_SECRET`
+- wrong auth header expected by OpenClaw
+- OpenClaw returned an error for another reason
+
+---
+
+## Bridge times out
+
+This means the bridge waited too long for OpenClaw.
+
+### Common reasons
 
 - wrong tailnet address
-- Tailscale sidecar not ready
+- Tailscale is not connected
 - OpenClaw is down
+- OpenClaw is slow
 
-## Tailscale connectivity
+### What to check
+
+- confirm the tailnet hostname or IP is correct
+- confirm the Droplet is connected to Tailscale
+- confirm OpenClaw is reachable from the Droplet
+
+---
+
+## Tailscale connectivity problems
 
 If the bridge cannot reach OpenClaw through Tailscale:
 
-- verify `TS_AUTHKEY`
-- verify pod shows up in tailnet
-- verify `OPENCLAW_WEBHOOK_URL` points to the tailnet name or IP
+- check `TS_AUTHKEY`
+- check whether the Droplet appears in the tailnet
+- check whether `OPENCLAW_WEBHOOK_URL` uses the right tailnet hostname or IP
 
-## ADDR binding issues
+---
 
-- Use `ADDR=:8080` when the bridge must be reachable through the pod network or Tailscale IP.
-- Use `ADDR=127.0.0.1:8080` only when another proxy or sidecar explicitly forwards traffic to localhost.
+## Address binding problems
 
-## Helm/schema issues
+- Use `ADDR=:8080` when the bridge must be reachable from the network.
+- Use `ADDR=127.0.0.1:8080` when another proxy like Caddy sits in front.
 
-- Validate `chart/values.schema.json` if Helm values stop rendering.
-- Run `helm lint ./chart` and `helm template` for the default and provider-specific values files.
+---
+
+## Helm / YAML problems
+
+If Helm output looks wrong:
+
+- check `chart/values.schema.json`
+- run `helm lint ./chart`
+- run `helm template ./chart`
+
+---
 
 ## Request ID tracing
 
-- The bridge forwards `X-Request-ID` upstream.
-- If a request looks missing in logs, set `X-Request-ID` on the inbound request and trace the same value in OpenClaw logs.
+The bridge forwards `X-Request-ID` upstream.
+
+If you cannot find a request in logs, set `X-Request-ID` on the inbound request and search for the same value in OpenClaw logs.
+
+---
 
 ## 401 or 403 from OpenClaw
 
@@ -89,17 +154,18 @@ Likely causes:
 
 The bridge sends both:
 
-- `Authorization: Bearer ...`
+- `Authorization: Bearer ***`
 - `x-openclaw-webhook-secret: ...`
+
+---
 
 ## Cloud portability
 
-This template only depends on:
+The bridge only depends on:
 
-- Docker
+- Docker or Go
 - HTTP
-- Kubernetes Deployment
-- Kubernetes Service
-- Kubernetes Ingress
+- a public HTTPS URL for ChatGPT
+- private network access to OpenClaw if you use Tailscale
 
-That is what keeps it portable across Azure and Alibaba.
+That is what makes it portable.

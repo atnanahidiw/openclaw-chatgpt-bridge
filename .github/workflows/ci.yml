@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Go race test
+        run: go test -race ./...
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Install PyYAML
+        run: python -m pip install --upgrade pyyaml
+
+      - name: Validate YAML files
+        run: |
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+
+          for path in [
+              "openapi/openclaw-bridge.openapi.yaml",
+              "chart/values.yaml",
+              "chart/values.azure.yaml",
+              "chart/values.alibaba.yaml",
+              ".github/workflows/ci.yml",
+          ]:
+              with open(Path(path), "r", encoding="utf-8") as f:
+                  yaml.safe_load(f)
+              print(f"OK {path}")
+          PY
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Helm lint
+        run: helm lint ./chart
+
+      - name: Helm template default
+        run: helm template openclaw-bridge ./chart
+
+      - name: Helm template Azure
+        run: helm template openclaw-bridge ./chart -f chart/values.azure.yaml
+
+      - name: Helm template Alibaba
+        run: helm template openclaw-bridge ./chart -f chart/values.alibaba.yaml

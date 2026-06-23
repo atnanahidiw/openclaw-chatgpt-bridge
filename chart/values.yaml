@@ -1,0 +1,53 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/your-org/openclaw-chatgpt-bridge
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: ""
+  host: bridge.example.com
+  path: /
+
+env:
+  port: 8080
+  addr: ":8080"
+  requestTimeoutMs: 30000
+  maxBodyBytes: 1048576
+  openclawWebhookUrl: http://openclaw-gateway:18789/plugins/webhooks/gpt
+  openclawSessionKey: agent:main:main
+
+secrets:
+  openclawWebhookSecret: replace-me
+
+tailscale:
+  enabled: true
+  image: tailscale/tailscale:stable
+  authKeySecretName: tailscale-auth
+  authKeySecretKey: TS_AUTHKEY
+  hostname: openclaw-bridge
+  userspace: true
+  acceptDns: false
+  stateDir: /var/lib/tailscale
+  openclawWebhookUrl: http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi

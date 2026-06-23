@@ -1,0 +1,15 @@
+services:
+  bridge:
+    build: .
+    image: openclaw-chatgpt-bridge:local
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PORT: "8080"
+      OPENCLAW_WEBHOOK_URL: "${OPENCLAW_WEBHOOK_URL:-http://host.docker.internal:18789/plugins/webhooks/gpt}"
+      OPENCLAW_WEBHOOK_SECRET: "${OPENCLAW_WEBHOOK_SECRET:-}"
+      OPENCLAW_SESSION_KEY: "${OPENCLAW_SESSION_KEY:-agent:main:main}"
+      REQUEST_TIMEOUT_MS: "${REQUEST_TIMEOUT_MS:-30000}"
+      MAX_BODY_BYTES: "${MAX_BODY_BYTES:-1048576}"

@@ -1,4 +1,11 @@
-# OpenClaw ChatGPT Bridge 🐾
+<h1 align="center">OpenClaw ChatGPT Bridge 🐾</h1>
+
+<p align="center">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white" />
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white" />
+  <img alt="Tailscale" src="https://img.shields.io/badge/Tailscale-supported-222222?logo=tailscale&logoColor=white" />
+  <img alt="ChatGPT Actions" src="https://img.shields.io/badge/ChatGPT-Actions-10A37F?logo=openai&logoColor=white" />
+</p>
 
 Bridge service for connecting a Custom GPT to OpenClaw.
 
@@ -46,6 +53,7 @@ This pattern is useful when ChatGPT should coordinate and review the work, while
 ## Deployment
 
 - [`docs/step-by-step.md`](./docs/step-by-step.md)
+- [`docs/deployment/`](./docs/deployment)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 
 ## GPT Action Setup

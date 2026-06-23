@@ -1,0 +1,140 @@
+{{- if .Values.tailscale.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "openclaw-chatgpt-bridge.fullname" . }}
+spec:
+  serviceName: {{ include "openclaw-chatgpt-bridge.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "openclaw-chatgpt-bridge.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "openclaw-chatgpt-bridge.name" . }}
+    spec:
+      serviceAccountName: {{ include "openclaw-chatgpt-bridge.fullname" . }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{ with .Values.resources }}
+          resources:
+{{ toYaml . | nindent 12 }}
+          {{ end }}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "openclaw-chatgpt-bridge.fullname" . }}-config
+            - secretRef:
+                name: {{ include "openclaw-chatgpt-bridge.fullname" . }}-secret
+          env:
+            - name: OPENCLAW_WEBHOOK_URL
+              value: {{ .Values.tailscale.openclawWebhookUrl | quote }}
+            - name: TAILSCALE_ENABLED
+              value: "true"
+            - name: HTTP_PROXY
+              value: "http://127.0.0.1:1055"
+            - name: HTTPS_PROXY
+              value: "http://127.0.0.1:1055"
+            - name: http_proxy
+              value: "http://127.0.0.1:1055"
+            - name: https_proxy
+              value: "http://127.0.0.1:1055"
+            - name: NO_PROXY
+              value: "127.0.0.1,localhost,.svc,.cluster.local"
+            - name: no_proxy
+              value: "127.0.0.1,localhost,.svc,.cluster.local"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+        - name: tailscale
+          image: {{ .Values.tailscale.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          {{ with .Values.tailscale.resources }}
+          resources:
+{{ toYaml . | nindent 12 }}
+          {{ end }}
+          env:
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tailscale.authKeySecretName | quote }}
+                  key: {{ .Values.tailscale.authKeySecretKey | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TS_KUBE_SECRET
+              value: "$(POD_NAME)"
+            - name: TS_HOSTNAME
+              value: {{ printf "%s-$(POD_NAME)" .Values.tailscale.hostname | quote }}
+            - name: TS_USERSPACE
+              value: {{ ternary "true" "false" .Values.tailscale.userspace | quote }}
+            - name: TS_ACCEPT_DNS
+              value: {{ ternary "true" "false" .Values.tailscale.acceptDns | quote }}
+            - name: TS_STATE_DIR
+              value: {{ .Values.tailscale.stateDir | quote }}
+            - name: TS_EXTRA_ARGS
+              value: "--socks5-server=localhost:1055 --outbound-http-proxy-listen=localhost:1055 --advertise-tags=tag:k8s"
+{{- else }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "openclaw-chatgpt-bridge.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "openclaw-chatgpt-bridge.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "openclaw-chatgpt-bridge.name" . }}
+    spec:
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{ with .Values.resources }}
+          resources:
+{{ toYaml . | nindent 12 }}
+          {{ end }}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "openclaw-chatgpt-bridge.fullname" . }}-config
+            - secretRef:
+                name: {{ include "openclaw-chatgpt-bridge.fullname" . }}-secret
+          env:
+            - name: OPENCLAW_WEBHOOK_URL
+              value: {{ .Values.env.openclawWebhookUrl | quote }}
+            - name: ADDR
+              value: {{ .Values.env.addr | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+{{- end }}

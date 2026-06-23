@@ -1,0 +1,10 @@
+{
+  "action": "run_task",
+  "flowId": "flow_12345",
+  "task": "Design 3 screens: transaction input, dashboard, and report summary",
+  "status": "queued",
+  "metadata": {
+    "stage": "design"
+  }
+}
+

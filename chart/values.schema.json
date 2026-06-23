@@ -1,0 +1,252 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["IfNotPresent", "Always", "Never"]
+        }
+      },
+      "required": ["repository", "tag", "pullPolicy"]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["cpu", "memory"]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["cpu", "memory"]
+        }
+      },
+      "required": ["requests", "limits"]
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "required": ["type", "port"]
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["enabled", "className", "host", "path"]
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "addr": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "openclawWebhookUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "openclawSessionKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "port",
+        "addr",
+        "requestTimeoutMs",
+        "maxBodyBytes",
+        "openclawWebhookUrl",
+        "openclawSessionKey"
+      ]
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "openclawWebhookSecret": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["openclawWebhookSecret"]
+    },
+    "tailscale": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authKeySecretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authKeySecretKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hostname": {
+          "type": "string",
+          "minLength": 1
+        },
+        "userspace": {
+          "type": "boolean"
+        },
+        "acceptDns": {
+          "type": "boolean"
+        },
+        "stateDir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "openclawWebhookUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cpu": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "memory": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["cpu", "memory"]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cpu": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "memory": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["cpu", "memory"]
+            }
+          },
+          "required": ["requests", "limits"]
+        }
+      },
+      "required": [
+        "enabled",
+        "image",
+        "authKeySecretName",
+        "authKeySecretKey",
+        "hostname",
+        "userspace",
+        "acceptDns",
+        "stateDir",
+        "openclawWebhookUrl",
+        "resources"
+      ]
+    }
+  },
+  "required": [
+    "replicaCount",
+    "image",
+    "resources",
+    "service",
+    "ingress",
+    "env",
+    "secrets",
+    "tailscale"
+  ]
+}
