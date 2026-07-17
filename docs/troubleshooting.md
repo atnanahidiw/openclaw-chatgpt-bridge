@@ -1,3 +1,7 @@
+---
+title: Troubleshooting
+---
+
 # Troubleshooting
 
 This page explains the most common problems in simple language.

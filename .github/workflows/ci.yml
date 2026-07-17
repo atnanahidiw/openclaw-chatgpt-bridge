@@ -41,6 +41,8 @@ jobs:
               "chart/values.azure.yaml",
               "chart/values.alibaba.yaml",
               ".github/workflows/ci.yml",
+              ".github/workflows/pages.yml",
+              "docs/_config.yml",
           ]:
               with open(Path(path), "r", encoding="utf-8") as f:
                   yaml.safe_load(f)

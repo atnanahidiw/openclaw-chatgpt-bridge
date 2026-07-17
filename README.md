@@ -17,7 +17,7 @@ The bridge lets users describe work in ChatGPT, then hand that work to OpenClaw 
 
 ## What can this help with?
 
-See [Use cases](./docs/usecases.md) for examples across software, project management, operations, customer support, and research or grant work.
+See [Use cases](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/usecases.html) for examples across software, project management, operations, customer support, and research or grant work.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ This pattern is useful when ChatGPT should coordinate and review the work, while
 1. Import [`openapi/openclaw-bridge.openapi.yaml`](./openapi/openclaw-bridge.openapi.yaml).
 1. Set auth to match your bridge deployment if needed.
 1. Save the GPT.
-1. Try one of the examples in [Use cases](./docs/usecases.md), or test with prompts like:
+1. Try one of the examples in [Use cases](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/usecases.html), or test with prompts like:
    - `Create a flow to review this repo and identify release blockers`
    - `Run a task to update the deployment docs based on the current manifests`
    - `Run a task to summarize repeated support issues and draft FAQ updates`
@@ -48,19 +48,22 @@ This pattern is useful when ChatGPT should coordinate and review the work, while
 ## API Examples
 
 - [`openapi/openclaw-bridge.openapi.yaml`](./openapi/openclaw-bridge.openapi.yaml)
-- [Use cases](./docs/usecases.md)
+- [Use cases](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/usecases.html)
 
 ## Deployment
 
-- [`docs/step-by-step.md`](./docs/step-by-step.md)
-- [`docs/deployment/`](./docs/deployment)
+- [Step-by-step setup](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/step-by-step.html)
+- [AWS deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/aws.html)
+- [Azure deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/azure.html)
+- [DigitalOcean deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/digital-ocean.html)
+- [Google Cloud deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/gcp.html)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 
 ## GPT Action Setup
 
 - Import [`openapi/openclaw-bridge.openapi.yaml`](./openapi/openclaw-bridge.openapi.yaml)
 - Point the action at the bridge URL that ChatGPT can reach
-- Use [Use cases](./docs/usecases.md) to choose a realistic first workflow
+- Use [Use cases](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/usecases.html) to choose a realistic first workflow
 
 ## Operations Endpoints
 
@@ -76,7 +79,7 @@ This pattern is useful when ChatGPT should coordinate and review the work, while
 
 ## Troubleshooting
 
-- [`docs/troubleshooting.md`](./docs/troubleshooting.md)
+- [Troubleshooting guide](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/troubleshooting.html)
 
 ## Version Endpoint
 

@@ -1,3 +1,7 @@
+---
+title: AWS deployment
+---
+
 # AWS deployment for the OpenClaw ChatGPT Bridge
 
 This guide is written for a **non-technical person** or an **intern**.

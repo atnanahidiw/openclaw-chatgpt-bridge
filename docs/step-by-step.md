@@ -1,3 +1,7 @@
+---
+title: Step-by-step setup
+---
+
 # Step-by-Step Setup
 
 This page gives the simplest way to get the bridge running.

@@ -1,3 +1,7 @@
+---
+title: Use cases
+---
+
 # Use cases
 
 This bridge connects a GPT Action to an OpenClaw webhook.
@@ -6,9 +10,10 @@ It is useful when a user wants to describe work in ChatGPT, then hand that work 
 
 The bridge is not limited to coding. Coding is only one example. The main value is delegation: ChatGPT becomes the place where the user explains the task, reviews progress, asks follow-up questions, and receives the final result.
 
-## 1. Software and DevOps work
-<details>
+## 1. Software and DevOps work {#software-devops}
+<details class="use-case" markdown="1">
 <summary>Show details</summary>
+<div class="details-content" markdown="1">
 
 ### Work the user is doing
 
@@ -60,12 +65,13 @@ Good examples:
 - review Kubernetes networking assumptions
 - update OpenAPI examples
 - write troubleshooting docs based on real behavior
+</div>
 </details>
 
-## 2. Research, grants, and analysis
-<details>
+## 2. Research, grants, and analysis {#research-grants}
+<details class="use-case" markdown="1">
 <summary>Show details</summary>
-
+<div class="details-content" markdown="1">
 
 ### Work the user is doing
 
@@ -109,11 +115,13 @@ Good examples:
 - map evidence to requirements
 - identify missing evidence
 - prepare a decision memo
+</div>
 </details>
 
-## 3. Product and project management
-<details>
+## 3. Product and project management {#product-projects}
+<details class="use-case" markdown="1">
 <summary>Show details</summary>
+<div class="details-content" markdown="1">
 
 ### Work the user is doing
 
@@ -156,11 +164,13 @@ Good examples:
 - check whether a feature is ready to ship
 - turn a support issue into engineering tasks
 - summarize blockers before a team meeting
+</div>
 </details>
 
-## 4. Operations and internal admin
-<details>
+## 4. Operations and internal admin {#operations-admin}
+<details class="use-case" markdown="1">
 <summary>Show details</summary>
+<div class="details-content" markdown="1">
 
 ### Work the user is doing
 
@@ -203,11 +213,13 @@ Good examples:
 - check whether required documents are complete
 - clean up repeated template errors
 - turn messy notes into a structured process
+</div>
 </details>
 
-## 5. Sales and customer support
-<details>
+## 5. Sales and customer support {#sales-support}
+<details class="use-case" markdown="1">
 <summary>Show details</summary>
+<div class="details-content" markdown="1">
 
 ### Work the user is doing
 
@@ -250,6 +262,7 @@ Good examples:
 - identify repeated bugs from complaints
 - turn user feedback into product tasks
 - review whether docs answer common questions
+</div>
 </details>
 
 ## When this bridge is a good fit

@@ -1,3 +1,7 @@
+---
+title: Google Cloud deployment
+---
+
 # Google Cloud deployment for the OpenClaw ChatGPT Bridge
 
 This guide is written for a **non-technical person** or an **intern**.

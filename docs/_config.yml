@@ -1,0 +1,15 @@
+title: OpenClaw ChatGPT Bridge
+description: Documentation for deploying and using the OpenClaw ChatGPT Bridge.
+
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: true
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
