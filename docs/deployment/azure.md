@@ -7,7 +7,7 @@ title: Azure deployment
 This guide is written for a **non-technical person** or an **intern**.
 
 <div class="tested" markdown="1">
-**Tested — the free tier Container Apps path was succesfully deployed end to end.**
+**Tested: the free tier Container Apps path was deployed end to end, successfully.**
 
 Jump to it: [Free tier deployment with Azure Container Apps](#free-tier-deployment-with-azure-container-apps).
 </div>
@@ -488,7 +488,7 @@ The environment takes a couple of minutes to create.
 ### Step 3 — Build and publish the image
 
 Container Apps pulls your image from a registry, so you need one. There are two ways to do
-this, and they are both fine — pick based on whether you want a private image or a free one.
+this, and they are both fine. Pick based on whether you want a private image or a free one.
 
 | | **Option A — GitHub Container Registry** | **Option B — Azure Container Registry** |
 |---|---|---|
@@ -502,7 +502,7 @@ this, and they are both fine — pick based on whether you want a private image 
 > **Note.** Option B is the simpler path and the one to choose if you want the image kept
 > private or you have no container tooling locally. It just is not free, so if you came to
 > this page for a zero-cost deployment, use Option A. The rest of the guide works with
-> either — Step 4 shows the one line that differs.
+> either. Step 4 shows the one line that differs.
 
 Do **one** of the two sections below, then continue to Step 4.
 
@@ -537,7 +537,7 @@ docker build --platform linux/amd64 \
   --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
 ```
 
-Confirm the architecture before pushing — this is the single most common cause of a
+Confirm the architecture before pushing. This is the single most common cause of a
 revision that deploys but never starts:
 
 ```bash
@@ -567,7 +567,7 @@ the deployment will fail with an image-pull error until you change this.
 2. Scroll to **Danger Zone**
 3. Click **Change visibility** → **Public**
 
-Verify it worked by doing exactly what Azure will do — fetch the manifest anonymously:
+Verify it worked by doing exactly what Azure will do, and fetch the manifest anonymously:
 
 ```bash
 REPO=YOUR_GITHUB_USER/openclaw-chatgpt-bridge
@@ -600,7 +600,7 @@ az acr create \
 ```
 
 Build the image in the cloud, so you do not need Docker on your own computer.
-This uses the repository's **normal** `Dockerfile` — nothing special is needed:
+This uses the repository's **normal** `Dockerfile`. Nothing special is needed:
 
 ```bash
 az acr build \
@@ -626,7 +626,7 @@ IMAGE="${ACR_SERVER}/bridge:v1"
 
 Sidecars cannot be described with command line flags alone, so the app is defined in a YAML file.
 
-**Fill in `.env` first** — it is the single source of truth for every value below.
+**Fill in `.env` first.** It is the single source of truth for every value below.
 See [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) for what each
 setting means and how to generate `BRIDGE_API_KEY`.
 
@@ -644,12 +644,12 @@ Then collect the two values that are specific to this deployment:
 ```bash
 ENV_ID="$(az containerapp env show --name openclaw-env --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
 
-# Option A (GHCR): set IMAGE yourself.
+# Option A (GHCR) — set IMAGE yourself.
 IMAGE="ghcr.io/YOUR_GITHUB_USER/openclaw-chatgpt-bridge:v1"
-# Option B (ACR): IMAGE and ACR_* were already set at the end of Step 3.
+# Option B (ACR) — IMAGE and ACR_* were already set at the end of Step 3.
 ```
 
-Now write the file. Both versions below are **complete** — copy the one matching the option
+Now write the file. Both versions below are **complete**. Copy the one matching the option
 you chose in Step 3, rather than assembling pieces. They differ only in the `registries`
 block and one extra secret.
 
@@ -838,7 +838,7 @@ EOF
 | Setting | Why |
 |---|---|
 | `TS_USERSPACE: "true"` | Container Apps does not allow privileged containers, so Tailscale must run in userspace mode |
-| `TS_SOCKS5_SERVER` and `TS_OUTBOUND_HTTP_PROXY_LISTEN` | Open the local proxy on port 1055. Use these variables rather than passing the flags yourself — see the warning below |
+| `TS_SOCKS5_SERVER` and `TS_OUTBOUND_HTTP_PROXY_LISTEN` | Open the local proxy on port 1055. Use these variables rather than passing the flags yourself. See the warning below |
 | `TS_KUBE_SECRET: ""` | The Tailscale image stores state in a Kubernetes secret by default. This is not Kubernetes, so turn that off |
 | `HTTP_PROXY` on the bridge | Tells the bridge to send its OpenClaw calls through the Tailscale container |
 | `cpu` and `memory` | On the Consumption plan the totals across **all** containers must be an allowed pair. Two containers at `0.25` / `0.5Gi` add up to `0.5` / `1.0Gi`, which is allowed |
@@ -879,7 +879,7 @@ It looks like:
 openclaw-bridge.politesky-1234abcd.eastus.azurecontainerapps.io
 ```
 
-Once the app is running, delete `app.yaml` — it still contains your secrets in plain text:
+Once the app is running, delete `app.yaml`. It still contains your secrets in plain text:
 
 ```bash
 rm app.yaml
@@ -1017,8 +1017,8 @@ curl -s -o /dev/null -w "new key: %{http_code}\n" -X POST "$BRIDGE/v1/openclaw" 
 
 `401` then `200` is correct. If the new key returns `401`, the restart did not take effect.
 
-Changing `BRIDGE_API_KEY` also means updating the credential saved in the ChatGPT Action —
-see [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
+Changing `BRIDGE_API_KEY` also means updating the credential saved in the ChatGPT Action. See
+[Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
 
 ### Things that went wrong for us
 
@@ -1031,14 +1031,14 @@ something is broken and you are not sure where to start, read this table first.
 | Image pull fails on a brand new registry | New GitHub packages are **private** by default and Container Apps has no credentials | Set the package public, then verify an anonymous manifest fetch returns `200` |
 | Bridge returns `401` from OpenClaw | The secret changed but a process is still running with the old one | Two restarts are needed and they are independent: restart OpenClaw so it re-reads `.env`, **and** `az containerapp revision restart` so the container re-reads the Azure secret |
 | Secret looks identical but still fails | `cut -d= -f2` truncated the value at an `=` | Use `cut -d= -f2-`, and compare SHA-256 prefixes instead of reading values by eye |
-| Route `404`s even though the config looks right | The secret failed to resolve, so the plugin skipped the route | See [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}) — compare your path against a deliberately fake one |
+| Route `404`s even though the config looks right | The secret failed to resolve, so the plugin skipped the route | See [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}). Compare your path against a deliberately fake one |
 | `/readyz` says `tailscale proxy not ready` | The Tailscale sidecar has not joined the tailnet | Check the auth key is ephemeral **and** reusable, and that it has not expired |
 | Everything works, then breaks after an idle period | Cold start | The first request after the app scales to zero has to restart Tailscale too. Retry once; if it matters, set `minReplicas: 1` and leave the free tier |
 
 #### The restart rule worth memorising
 
 Configuration hot-reloads. **Environment variables do not.** Any change to a secret means
-restarting whichever processes read it at startup — on both sides of the bridge.
+restarting whichever processes read it at startup, on both sides of the bridge.
 
 ---
 

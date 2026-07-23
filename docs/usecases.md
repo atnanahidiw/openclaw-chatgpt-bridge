@@ -6,7 +6,7 @@ title: Use cases
 
 This bridge connects a GPT Action to an OpenClaw agent.
 
-It is useful when a user wants to describe work in ChatGPT, then hand that work to an agent that can actually carry it out — reading files, running commands, and using its installed skills on a machine you control. The work can be technical, operational, administrative, research-heavy, or document-heavy.
+It is useful when a user wants to describe work in ChatGPT, then hand that work to an agent that can actually carry it out: reading files, running commands, and using its installed skills on a machine you control. The work can be technical, operational, administrative, research-heavy, or document-heavy.
 
 The bridge is not limited to coding. Coding is only one example. The main value is delegation: ChatGPT becomes the place where the user explains the task, reviews progress, asks follow-up questions, and receives the final result.
 
@@ -355,7 +355,7 @@ still knows what it just did:
 ### Ask something quick
 
 For a question that needs no file reading or commands, `ask` waits and returns the answer
-directly. Expect roughly 30 seconds even so — a real agent turn is starting:
+directly. Expect roughly 30 seconds even so, because a real agent turn is starting:
 
 ~~~json
 {

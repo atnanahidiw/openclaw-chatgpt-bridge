@@ -460,7 +460,7 @@ gcloud services enable run.googleapis.com \
   secretmanager.googleapis.com
 ```
 
-**Fill in `.env` first** — it is the single source of truth for every value below.
+**Fill in `.env` first.** It is the single source of truth for every value below.
 See [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) for what each
 setting means and how to generate `BRIDGE_API_KEY`.
 
@@ -633,7 +633,7 @@ gcloud builds submit --config cloudbuild.yaml --substitutions _IMAGE="$IMAGE" .
 
 This takes a few minutes the first time.
 
-If you would rather keep only one Dockerfile, you can instead rename `Dockerfile.cloudrun` to `Dockerfile` and run `gcloud builds submit --tag "$IMAGE" .` — but then the plain Docker and Kubernetes instructions in `CONTRIBUTING.md` will start Tailscale too, which is usually not what you want locally.
+If you would rather keep only one Dockerfile, you can instead rename `Dockerfile.cloudrun` to `Dockerfile` and run `gcloud builds submit --tag "$IMAGE" .`, but then the plain Docker and Kubernetes instructions in `CONTRIBUTING.md` will start Tailscale too, which is usually not what you want locally.
 
 ---
 
@@ -685,7 +685,7 @@ The bridge is still protected, because OpenClaw only accepts calls carrying the 
 
 **Set `ADDR`, not `PORT`.**
 The bridge binds the address in `ADDR`. It reads `PORT` but does not use it for binding.
-Cloud Run sets `PORT` automatically, and that alone will not move the bridge — so keep `--port 8080` and `ADDR=:8080` matched.
+Cloud Run sets `PORT` automatically, and that alone will not move the bridge, so keep `--port 8080` and `ADDR=:8080` matched.
 
 **`OPENCLAW_GATEWAY_URL` must not be `localhost`.**
 Go never sends requests for `localhost` or `127.0.0.1` through `HTTP_PROXY`, no matter how the proxy is configured.

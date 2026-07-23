@@ -7,8 +7,8 @@ title: Free deployment options
 You can run the bridge without paying for a server, a domain, or an HTTPS certificate.
 This page helps you pick a platform. The step-by-step instructions live in a **Free tier** section at the bottom of each provider's guide:
 
-- [Google Cloud Run]({{ '/deployment/gcp.html' | relative_url }}#free-tier-deployment-with-cloud-run) — in the Google Cloud guide
-- [Azure Container Apps]({{ '/deployment/azure.html' | relative_url }}#free-tier-deployment-with-azure-container-apps) — in the Azure guide
+- [Google Cloud Run]({{ '/deployment/gcp.html' | relative_url }}#free-tier-deployment-with-cloud-run), in the Google Cloud guide
+- [Azure Container Apps]({{ '/deployment/azure.html' | relative_url }}#free-tier-deployment-with-azure-container-apps), in the Azure guide
 
 ## One-sentence explanation
 
@@ -40,7 +40,7 @@ Here is where things stand as of **July 2026**:
 | **[Azure Container Apps]({{ '/deployment/azure.html' | relative_url }}#free-tier-deployment-with-azure-container-apps)** | Yes, always free grant | **Equally good, and simpler to set up.** Same monthly free grant, and it runs Tailscale as a sidecar container so you keep the normal `Dockerfile` |
 | Huawei Cloud FunctionGraph | Yes, monthly free tier | 1 million requests and 400,000 GB-seconds a month, reset monthly. Workable in theory, awkward in practice: functions are short-lived, so Tailscale has to rejoin the tailnet on every cold start |
 | Alibaba Cloud | **Trial only** | No permanent free compute. New accounts get a 12-month ECS trial and 3 monthly cycles of Function Compute quota, then it becomes paid |
-| Oracle Cloud Always Free | Yes, a real VM | Works well, but signup is frequently declined or stuck in review, and ARM capacity is often unavailable. If you get one, follow the [DigitalOcean guide]({{ '/deployment/digital-ocean.html' | relative_url }}) instead — the steps are the same |
+| Oracle Cloud Always Free | Yes, a real VM | Works well, but signup is frequently declined or stuck in review, and ARM capacity is often unavailable. If you get one, follow the [DigitalOcean guide]({{ '/deployment/digital-ocean.html' | relative_url }}) instead. The steps are the same |
 | Northflank | Free plan, no forced sleep | Workable, but a credit card is required |
 | Render | Free web services | Free instances spin down when idle and can take ~50 seconds to wake, which is long enough for a ChatGPT Action to give up |
 | Fly.io | **No longer free** | New accounts get a short trial only. The old free allowances were removed |
@@ -65,7 +65,7 @@ Both are genuinely free for this workload, and their monthly grants are identica
 **Pick Cloud Run** if you are already on Google Cloud, or you want the path Tailscale documents officially.
 
 Both require a billing account with a card on file, even though neither charges you inside the free limits.
-Both allowances can change — check the [Cloud Run](https://cloud.google.com/run/pricing) and [Container Apps](https://azure.microsoft.com/en-us/pricing/details/container-apps/) pricing pages before relying on them.
+Both allowances can change, so check the [Cloud Run](https://cloud.google.com/run/pricing) and [Container Apps](https://azure.microsoft.com/en-us/pricing/details/container-apps/) pricing pages before relying on them.
 
 ---
 

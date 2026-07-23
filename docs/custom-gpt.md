@@ -29,7 +29,7 @@ curl https://YOUR-BRIDGE-URL/healthz
 curl https://YOUR-BRIDGE-URL/readyz
 ```
 
-`/readyz` is the important one — it returns `ok` only when the bridge can reach OpenClaw
+`/readyz` is the important one. It returns `ok` only when the bridge can reach OpenClaw
 through Tailscale.
 
 ---
@@ -80,9 +80,9 @@ Set `BRIDGE_API_KEY` on the bridge and give the same value to the Action.
 
 ### On the bridge
 
-Set `BRIDGE_API_KEY` in your `.env` — see
+Set `BRIDGE_API_KEY` in your `.env`. See
 [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) for how to generate
-one and why it matters. Then deploy that value. How depends on where the bridge runs — see the
+one and why it matters. Then deploy that value. How depends on where the bridge runs. See the
 [deployment guide]({{ '/deployment/free-tier.html' | relative_url }}) for your platform,
 which reads the value straight out of `.env`.
 
@@ -130,7 +130,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
 `401` then `200` means the endpoint is closed and your key works. Two `200`s mean the key is
 not set on the bridge and it is still open.
 
-Health endpoints stay open on purpose — container platforms probe `/healthz` and `/readyz`
+Health endpoints stay open on purpose, because container platforms probe `/healthz` and `/readyz`
 without credentials, so requiring a key there would break deployment.
 
 ### What the key does and does not protect
@@ -138,7 +138,7 @@ without credentials, so requiring a key there would break deployment.
 | | |
 |---|---|
 | Stops a stranger who finds your bridge URL | Yes |
-| Stops someone who has the key | No — treat it like a password |
+| Stops someone who has the key | No. Treat it like a password |
 | Protects OpenClaw if the bridge is compromised | No. Bind the webhook route to a narrow session so the blast radius is small |
 
 Rotating it means updating both sides: the bridge's environment variable **and** the Action's
@@ -198,8 +198,8 @@ THE ASYNC LOOP
 
 WHICH SESSION TO USE
 customSession names the OpenClaw session your work runs in. The schema sets a
-default that is right almost every time, so leave it alone -- send it as-is, or
-omit it and let the default apply.
+default that is right almost every time. Leave it alone: send it as-is, or omit
+it and let the default apply.
 
 Only change it when the user wants a separate line of work kept apart from the
 rest, like "keep this one in a scratch session". Then pick a short name such as
@@ -232,8 +232,8 @@ ERRORS
 - 400 with details: read the details list, fix the fields, retry once.
 
 SAFETY
-OpenClaw acts on a real machine. Before delegating anything destructive —
-deleting files, force-pushing, changing system settings — confirm with the user
+OpenClaw acts on a real machine. Before delegating anything destructive
+(deleting files, force-pushing, changing system settings), confirm with the user
 first, and repeat back exactly what will happen.
 ```
 
@@ -266,7 +266,7 @@ Ask OpenClaw to run `sw_vers` and paste the exact output.
 ```
 
 The output should be real system information, not a plausible guess. If you get something
-that looks invented, the GPT is answering for itself instead of delegating — tighten the
+that looks invented, the GPT is answering for itself instead of delegating. Tighten the
 "never invent an answer" line in the instructions.
 
 ### 3. Prove the async loop
@@ -295,7 +295,7 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 
 | What you see in ChatGPT | Cause | Fix |
 |---|---|---|
-| "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge takes a few seconds — ask again |
+| "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge takes a few seconds. Ask again |
 | Talks about calling the action but nothing happens | The action was saved without importing cleanly | Re-import the schema and confirm `sendToOpenClaw` is listed |
 | `401`, body `{"error":"unauthorized"}` | The Action's `api_key` is missing or wrong | Re-check Step 3: it must equal `BRIDGE_API_KEY` on the bridge |
 | "I could not reach OpenClaw", or a connection error | Almost always a cold start plus a sync `ask`. The bridge sleeps when idle (~20s to wake) and a turn takes ~30s, which together exceed what the Action waits for | Make the GPT use `ask_async`. Nothing is broken; it just took too long |
@@ -307,11 +307,11 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 | Polls `get_result` in a tight loop | Instructions not followed | Re-state the wait-several-seconds rule |
 
 ---|---|---|
-| "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge can take several seconds — ask again |
+| "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge can take several seconds. Ask again |
 | Talks about calling the action but nothing happens | The action was saved without being imported cleanly | Re-import the schema and confirm `sendToOpenClaw` is listed |
 | `Unrecognized keys` | The model added a field the action does not accept | Strengthen the FIELD RULES section of the instructions |
 | `401`, body is `{"error":"unauthorized"}` | The Action's `api_key` is missing or wrong | Re-check Step 3: the Action credential must equal `BRIDGE_API_KEY` on the bridge |
-| `401` with an `upstreamStatus` field | OpenClaw rejected the bridge's own webhook secret | See [Troubleshooting]({{ '/troubleshooting.html' | relative_url }}) — usually a missed restart |
+| `401` with an `upstreamStatus` field | OpenClaw rejected the bridge's own webhook secret | See [Troubleshooting]({{ '/troubleshooting.html' | relative_url }}). Usually a missed restart |
 | First call each morning fails, later ones work | Cold start | Retry, or run with `minReplicas: 1` and leave the free tier |
 
 ---

@@ -6,7 +6,7 @@ description: Connect ChatGPT Actions to OpenClaw with a small, secure Go bridge.
 <section class="hero">
   <span class="eyebrow">Open source bridge</span>
   <h1>Delegate work from ChatGPT to OpenClaw.</h1>
-  <p class="lead">A small Go service that securely connects Custom GPT Actions to an OpenClaw webhook—without exposing OpenClaw directly.</p>
+  <p class="lead">A small Go service that securely connects Custom GPT Actions to OpenClaw, without exposing OpenClaw directly.</p>
   <div class="hero-actions">
     <a class="button primary" href="{{ '/step-by-step.html' | relative_url }}">Start building&nbsp; →</a>
     <a class="button" href="https://github.com/atnanahidiw/openclaw-chatgpt-bridge">View on GitHub</a>
@@ -29,7 +29,7 @@ Bind the OpenClaw webhook route to the narrowest session that fits.
 **The execution ingress is full operator access.** Enabling the Gateway's
 `/v1/chat/completions` endpoint grants callers the complete operator scope set with owner
 semantics. OpenClaw's own docs say to keep it on loopback or a private tailnet and never
-expose it publicly — the bridge is what holds that boundary.
+expose it publicly. The bridge is what holds that boundary.
 
 Full detail in [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) and
 [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).

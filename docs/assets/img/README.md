@@ -3,7 +3,7 @@
 Source: [Simple Icons](https://simpleicons.org) (`simple-icons` npm package). The icon
 files are CC0. The trademarks are not.
 
-These logos are used **nominatively** — to say which platforms this bridge deploys to.
+These logos are used **nominatively**, to say which platforms this bridge deploys to.
 That is not a claim of endorsement, sponsorship, or affiliation by Amazon, Microsoft,
 Google, or DigitalOcean.
 

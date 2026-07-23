@@ -106,7 +106,7 @@ python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['
 
 That value becomes `OPENCLAW_GATEWAY_TOKEN` in the bridge's `.env`.
 
-If `gateway.auth.mode` is `password` rather than `token`, use the password instead — the
+If `gateway.auth.mode` is `password` rather than `token`, use the password instead. The
 endpoint accepts either as `Authorization: Bearer <value>`.
 
 **This token is the sensitive one.** It is not a webhook secret scoped to one route; it is
@@ -120,7 +120,7 @@ Every turn runs in an OpenClaw session. You do not hand the caller a session key
 the bridge a **prefix**, and the caller can only add a name onto the end of it.
 
 Set that prefix with `OPENCLAW_SESSION_PREFIX`. The default, `agent:main:chatgpt`, is the
-right one — it keeps ChatGPT's work in its own corner, away from your day-to-day chat. Point
+right one. It keeps ChatGPT's work in its own corner, away from your day-to-day chat. Point
 it at `agent:main:main` and everything ChatGPT does spills into your normal conversation, so
 don't.
 
@@ -132,7 +132,7 @@ Here is how a request turns into a session:
 The reason this is a prefix rather than a fixed key is safety. The caller supplies a name,
 never a whole key, and the bridge throws out anything with a colon in it. So even someone
 who steals the bridge key cannot craft a value that reaches `agent:main:main` or a reserved
-`subagent:` / `cron:` / `acp:` session — the namespace simply isn't theirs to pick.
+`subagent:` / `cron:` / `acp:` session. The namespace simply isn't theirs to pick.
 
 None of these sessions need to exist first. OpenClaw makes one the moment it is used.
 
@@ -144,7 +144,7 @@ The bridge runs elsewhere, so it needs a path in. Check what the Gateway binds:
 lsof -nP -iTCP:18789 -sTCP:LISTEN
 ```
 
-`127.0.0.1:18789` means loopback only — correct, and not reachable from anywhere else yet.
+`127.0.0.1:18789` means loopback only, which is correct, and not reachable from anywhere else yet.
 
 ### Recommended: put Tailscale in front
 
@@ -252,7 +252,7 @@ curl -s "$BASE/v1/chat/completions" \
 
 Expect a standard OpenAI response with `choices[0].message.content` set to `pong`.
 
-**Expect this to take several seconds even for a trivial question** — a real agent turn is
+**Expect this to take several seconds even for a trivial question.** A real agent turn is
 starting, with the agent's full system context. Around 7 seconds locally is normal.
 
 ### 7e. Prove tools work
@@ -268,15 +268,15 @@ curl -s "$BASE/v1/chat/completions" \
 ```
 
 If the output matches your real machine, tools are working. If it looks plausible but
-generic, the agent guessed — check that its tool policy allows shell access.
+generic, the agent guessed. Check that its tool policy allows shell access.
 
 ---
 
 ## Step 8 — Turn off the webhooks plugin, if you enabled it
 
 Earlier versions of this bridge used OpenClaw's `webhooks` plugin. **It cannot execute
-anything** — `run_task` there only records a TaskFlow row for external automation that does
-its own work — so the bridge no longer uses it.
+anything.** `run_task` there only records a TaskFlow row for external automation that does
+its own work, so the bridge no longer uses it.
 
 If you enabled it for an older version, disable it now rather than leaving an authenticated
 surface nobody tests:

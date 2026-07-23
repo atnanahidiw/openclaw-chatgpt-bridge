@@ -64,7 +64,7 @@ Copy the example file:
 cp .env.example .env
 ```
 
-Then open it and set the values below. `.env` is gitignored — never commit it.
+Then open it and set the values below. `.env` is gitignored, so never commit it.
 
 ### The values
 
@@ -74,7 +74,7 @@ Then open it and set the values below. `.env` is gitignored — never commit it.
 | `REQUEST_TIMEOUT_MS` | no | How long to wait for OpenClaw. Default `30000` |
 | `MAX_BODY_BYTES` | no | Maximum request size. Default `1048576` |
 | `OPENCLAW_GATEWAY_URL` | **yes** | Base URL of the OpenClaw Gateway. The bridge appends `/v1/chat/completions` |
-| `OPENCLAW_GATEWAY_TOKEN` | **yes** | Gateway token, from `gateway.auth.token`. **Full operator access** — it never leaves the bridge |
+| `OPENCLAW_GATEWAY_TOKEN` | **yes** | Gateway token, from `gateway.auth.token`. **Full operator access.** It never leaves the bridge |
 | `OPENCLAW_AGENT` | no | Which agent to target. Defaults to `openclaw/default` |
 | `OPENCLAW_SESSION_PREFIX` | no | Namespace ChatGPT sessions land in. Defaults to `agent:main:chatgpt`. Callers append a name |
 | `BRIDGE_API_KEY` | strongly | Shared secret callers must present **to** the bridge. See below |
@@ -101,7 +101,7 @@ both hops.
 
 ### Setting `BRIDGE_API_KEY`
 
-Generate one rather than inventing it — a memorable string is guessable in a way its
+Generate one rather than inventing it. A memorable string is guessable in a way its
 length does not suggest:
 
 ```bash
@@ -112,7 +112,7 @@ Without it the bridge still starts, logs a warning, and **accepts unauthenticate
 requests**: anyone who knows the URL can drive your OpenClaw TaskFlows. That is a choice
 you can make deliberately, not one to drift into.
 
-The same value goes in the Custom GPT Action as an `api_key` header — see
+The same value goes in the Custom GPT Action as an `api_key` header. See
 [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
 
 ### Getting a Tailscale auth key {#tailscale-auth-key}
@@ -142,7 +142,7 @@ its own key rather than reusing that one.
 
 ### If OpenClaw is private
 
-Point `OPENCLAW_GATEWAY_URL` at the **Tailscale hostname** or IP, never `localhost` — Go
+Point `OPENCLAW_GATEWAY_URL` at the **Tailscale hostname** or IP, never `localhost`. Go
 never sends loopback addresses through a proxy, so the bridge would silently skip Tailscale:
 
 ```text
@@ -174,7 +174,7 @@ container that starts and misbehaves later:
 echo "core values present"
 ```
 
-Deploying to a cloud platform? Add `: "${TS_AUTHKEY:?set it in .env}"` — an unset
+Deploying to a cloud platform? Add `: "${TS_AUTHKEY:?set it in .env}"`. An unset
 Tailscale key produces a container that starts but never joins your tailnet, which only
 surfaces later as `/readyz` failing.
 

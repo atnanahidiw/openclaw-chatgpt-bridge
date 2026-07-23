@@ -24,7 +24,7 @@ State: none, except an in-memory job store for async turns.
 
 ## Layout
 
-All Go source is `package main`, flat at the repo root — no `src/`, no `cmd/`, and tests
+All Go source is `package main`, flat at the repo root, with no `src/` or `cmd/`, and tests
 sit beside the code they test (they call unexported functions, so they must).
 
 [main.go](main.go) is deliberately one file, organized into banner-commented sections that
@@ -37,7 +37,7 @@ rather than appending to the end, and keep the map in the package doc comment cu
 | Configuration | `config` struct, `loadConfig`, env helpers |
 | Routing | `newMux`, `/healthz`, `/readyz`, `/version` |
 | Inbound authentication | `authorizeRequest`, `presentedKey`, `secretsEqual` |
-| Request handling | `handleOpenClaw` — decode, validate, dispatch |
+| Request handling | `handleOpenClaw`, which decodes, validates, dispatches |
 | Payload contract | `allowedActions`, normalization, validation |
 | Async job store | `jobStore` and its janitor |
 | OpenClaw gateway hop | `askGateway`, error mapping |
@@ -63,7 +63,7 @@ go vet ./...
 go run .               # needs .env exported, or it 500s on /v1/openclaw
 ```
 
-Copy `.env.example` to `.env` first. `go run .` does not read `.env` itself — the Docker
+Copy `.env.example` to `.env` first. `go run .` does not read `.env` itself; the Docker
 Compose and script paths do the loading.
 
 Smoke test a running instance:
@@ -75,10 +75,10 @@ curl http://localhost:8080/healthz
 
 ## Endpoints
 
-- `POST /v1/openclaw` — the only functional route, and the only one requiring auth
-- `GET /healthz` — always OK
-- `GET /readyz` — additionally dials `TAILSCALE_PROXY_ADDR` when `TAILSCALE_ENABLED=true`
-- `GET /version` — build metadata injected via `-ldflags -X main.version=…`
+- `POST /v1/openclaw`: the only functional route, and the only one requiring auth
+- `GET /healthz`: always OK
+- `GET /readyz`: additionally dials `TAILSCALE_PROXY_ADDR` when `TAILSCALE_ENABLED=true`
+- `GET /version`: build metadata injected via `-ldflags -X main.version=…`
 
 Health endpoints stay unauthenticated on purpose: container platforms probe them without
 credentials.
@@ -91,10 +91,11 @@ Three actions, all thin wrappers over one chat-completions call:
 | --- | --- | --- | --- |
 | `ask` | `message` | `customSession` | `reply`, synchronously (`200`) |
 | `ask_async` | `message` | `customSession` | `jobId`, immediately (`200`) |
-| `get_result` | `jobId` | — | `status`, plus `reply` or `error` |
+| `get_result` | `jobId` | none | `status`, plus `reply` or `error` |
 
-Every success is `200` — including `ask_async`. `202` was correct but ChatGPT Actions
-report it as a `ClientResponseError`, so the code carries `status` in the body instead.
+Every success is `200`, `ask_async` included. `202` would be more correct, but ChatGPT
+Actions report it as a `ClientResponseError`, so the code carries `status` in the body
+instead.
 
 `customSession` is a **name**, not a full key. The bridge prepends its own namespace
 (`sessionPrefix`, default `agent:main:chatgpt`) and sends the result as
@@ -115,7 +116,7 @@ tell you that a turn takes 30 seconds, or that the endpoint is disabled by defau
 
 ## Conventions
 
-- Standard library only. `go.mod` has zero dependencies — keep it that way unless the user
+- Standard library only. `go.mod` has zero dependencies. Keep it that way unless the user
   asks for a dependency explicitly.
 - All responses go through `writeJSON` and carry an `ok` boolean. Errors add `error`,
   validation failures add `details` (a string array), async failures add `failedAt` and a
@@ -127,7 +128,7 @@ tell you that a turn takes 30 seconds, or that the endpoint is disabled by defau
   ends. Never log the gateway token, the api key, or message bodies.
 - Config is read once at startup by `loadConfig` via the `envString`/`envInt` helpers,
   which fall back silently on unset or unparseable values. Do not read `os.Getenv` from
-  handlers — pass `config` through.
+  handlers; pass `config` through.
 - Auth runs **before** any other check, so an unauthenticated caller learns nothing about
   configuration. `TestAuthIsCheckedBeforeConfiguration` pins this.
 - Secrets are compared with `secretsEqual`, which hashes both sides and uses
@@ -138,7 +139,7 @@ tell you that a turn takes 30 seconds, or that the endpoint is disabled by defau
 ## Gotchas
 
 - **Async jobs live in memory.** A restart drops them, and a second replica cannot see the
-  first replica's jobs, so a poll can `404` a healthy job. **Run one replica** — on Azure
+  first replica's jobs, so a poll can `404` a healthy job. **Run one replica.** On Azure
   Container Apps that is `--max-replicas 1`. Adding horizontal scale requires moving the
   job store somewhere shared first.
 - **The upstream endpoint is disabled by default.** `gateway.http.endpoints.chatCompletions`
@@ -147,23 +148,23 @@ tell you that a turn takes 30 seconds, or that the endpoint is disabled by defau
   `200 text/html` for paths that do not exist, so a `200` from `/v1/models` proves nothing
   on its own. This has caused false "it works" conclusions more than once.
 - **Two credentials fail differently.** A bad caller key is `401` (their problem); a bad
-  gateway token is `500` (the operator's). Keep that mapping — a GPT should retry neither,
+  gateway token is `500` (the operator's). Keep that mapping; a GPT should retry neither,
   but the distinction tells a human where to look.
 - **Every success returns 200, never 202.** ChatGPT Actions surface non-200 success codes
   as a `ClientResponseError`. `ask_async` therefore answers `200` with `status: "running"`
   in the body. `TestAsyncRoundTrip` asserts the code.
 - **Turns are slow.** Even a trivial question takes seconds; anything touching files takes
   minutes. `ask` exists for convenience, but `ask_async` is the honest default. Do not
-  lower `REQUEST_TIMEOUT_MS` to "fix" a timeout — switch to async.
+  lower `REQUEST_TIMEOUT_MS` to "fix" a timeout. Switch to async.
 - **The Dockerfile copies `*.go` from the root only.** If Go source ever moves into
   subdirectories, [Dockerfile](Dockerfile) needs a matching `COPY` or the image build
-  breaks while CI still passes — the two build paths are independent. It also
+  breaks while CI still passes; the two build paths are independent. It also
   cross-compiles via `--platform=$BUILDPLATFORM` and `GOARCH=$TARGETARCH`, because
   Container Apps requires `linux/amd64` and emulating the Go toolchain is far slower.
 - **CI validates a hard-coded list of YAML paths** in
   [.github/workflows/ci.yml](.github/workflows/ci.yml). New chart values files or workflows
   must be added to that list. That step uses a strict loader that rejects duplicate mapping
-  keys — plain `yaml.safe_load` keeps the last one silently, which is how a duplicated
+  keys. Plain `yaml.safe_load` keeps the last one silently, which is how a duplicated
   `goal` property once sat in the OpenAPI spec with CI green.
 - **`k8s/` and `chart/` describe the same deployment twice.** A change to env vars, probes,
   or the Tailscale sidecar needs to land in both, plus
@@ -178,4 +179,4 @@ tell you that a turn takes 30 seconds, or that the endpoint is disabled by defau
 
 Run `go test -race ./...` and `go vet ./...`. If you touched `chart/`, also run
 `helm lint ./chart` and `helm template openclaw-bridge ./chart` against each values preset
-(default, `values.azure.yaml`, `values.alibaba.yaml`) — CI does exactly this.
+(default, `values.azure.yaml`, `values.alibaba.yaml`). CI does exactly this.

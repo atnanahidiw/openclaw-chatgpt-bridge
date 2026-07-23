@@ -14,7 +14,7 @@
 //	helpers    -> JSON encode/decode plumbing
 //
 // The bridge calls OpenClaw's OpenAI-compatible endpoint, which runs a real
-// agent turn — tools, skills and all — and returns what the agent said. That
+// agent turn (tools, skills and all) and returns what the agent said. That
 // endpoint is full operator access, so the gateway token stays private here
 // and callers are re-authenticated with BRIDGE_API_KEY.
 //
@@ -604,7 +604,7 @@ func validateInboundPayload(payload normalizedPayload) validationResult {
 //
 // In memory on purpose: the bridge has no database and this is the smallest
 // thing that works. The consequences are real, so they are documented rather
-// than hidden — a restart drops every job, and a second replica cannot see
+// than hidden. A restart drops every job, and a second replica cannot see
 // the first replica's jobs. Run one replica.
 // ---------------------------------------------------------------------------
 

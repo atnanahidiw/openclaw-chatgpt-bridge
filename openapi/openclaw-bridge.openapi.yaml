@@ -29,7 +29,7 @@ paths:
       #
       # Understand what that permits: this one operation carries ask, ask_async
       # and get_result, so approving it once approves everything the agent can
-      # do — including shell commands on the machine running OpenClaw. Set it
+      # do, including shell commands on the machine running OpenClaw. Set it
       # back to true if you would rather confirm each call.
       x-openai-isConsequential: false
       requestBody:
@@ -77,7 +77,7 @@ paths:
                     work goes to agent:main:chatgpt instead.
 
 
-                    Set the default here, once, per Custom GPT — this schema is
+                    Set the default here, once, per Custom GPT. This schema is
                     where that choice lives, not the instructions. A stable value
                     such as the GPT's own id keeps one GPT's work together and
                     separate from every other GPT's.
@@ -191,7 +191,7 @@ paths:
                 $ref: "#/components/schemas/BridgeError"
         "500":
           description: >
-            The bridge is misconfigured — for example its gateway URL is unset,
+            The bridge is misconfigured. For example, its gateway URL is unset,
             or OpenClaw rejected the bridge's own credential. Nothing the caller
             can fix by retrying.
           content:

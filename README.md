@@ -20,15 +20,15 @@
 > **1. The bridge endpoint is public.** A Custom GPT Action can only call a publicly
 > reachable HTTPS URL. The only thing standing between the internet and your OpenClaw is
 > `BRIDGE_API_KEY`. Leave it unset and the endpoint accepts **anyone** who finds the URL.
-> Set it to something long and random — not a memorable phrase.
+> Set it to something long and random, not a memorable phrase.
 >
 > **2. Whoever holds the key can act as you.** OpenClaw runs a real agent turn: shell
 > commands, file edits, its installed skills. Point the bridge at a dedicated session via
 > `OPENCLAW_SESSION_KEY`, so a leaked key cannot reach your main agent's work.
 >
 > **3. The execution ingress is full operator access.** Enabling the Gateway's
-> `/v1/chat/completions` endpoint — required if you want OpenClaw to actually *do* work and
-> reply — grants callers the complete operator scope set with owner semantics. OpenClaw's
+> `/v1/chat/completions` endpoint, which you need if you want OpenClaw to actually *do* work and
+> reply, grants callers the complete operator scope set with owner semantics. OpenClaw's
 > own docs say to keep it on loopback or a private tailnet and **never** expose it to the
 > public internet. The bridge is what keeps that boundary: it holds the gateway token
 > privately and re-authenticates callers with its own key.
@@ -62,7 +62,7 @@ See [Use cases](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/usecases.h
 
 The bridge authenticates the caller, forwards the instruction to OpenClaw's Gateway, and
 returns what the agent said. OpenClaw runs a genuine agent turn with its tools and skills,
-so it can read files, run commands, and act — not just answer.
+so it can read files, run commands, and act, not just answer.
 
 Three actions:
 
@@ -97,8 +97,8 @@ OpenClaw does the work on your own machine.
 
 ## Deployment
 
-- [Deployment overview](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/) — compare the targets and pick one
-  - [Free deployment options](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/free-tier.html) — no server or domain needed
+- [Deployment overview](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/): compare the targets and pick one
+  - [Free deployment options](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/free-tier.html): no server or domain needed
   - [Step-by-step setup](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/step-by-step.html)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 

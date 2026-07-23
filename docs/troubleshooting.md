@@ -28,8 +28,8 @@ The bridge does not know which OpenClaw Gateway to call.
 
 ### Fix
 
-Set it in `.env` or your deployment config. It is the Gateway base URL, without a path —
-the bridge appends `/v1/chat/completions` itself:
+Set it in `.env` or your deployment config. Give the Gateway base URL only, with no path.
+The bridge appends `/v1/chat/completions` itself:
 
 ```bash
 OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
@@ -56,7 +56,7 @@ Required fields:
 - `ask` and `ask_async` need `message`
 - `get_result` needs `jobId`
 
-`customSession` is a plain name — letters, digits, dot, dash, underscore, no colons. The bridge builds the full session key from its own prefix.
+`customSession` is a plain name: letters, digits, dot, dash, underscore, no colons. The bridge builds the full session key from its own prefix.
 
 ---
 
@@ -80,7 +80,7 @@ answer.
 The `jobId` is unknown. Either it expired past `JOB_TTL_MS`, or the bridge restarted.
 
 **Async jobs live in memory.** They do not survive a restart, and a second replica cannot
-see the first replica's jobs. Run a single replica — on Azure Container Apps that means
+see the first replica's jobs. Run a single replica. On Azure Container Apps that means
 `--max-replicas 1`. With more than one, a poll can land on the wrong replica and 404 a job
 that is running perfectly well.
 
@@ -113,14 +113,14 @@ This means the bridge reached OpenClaw, but OpenClaw said “no”.
 
 ## Deployment failures
 
-Getting the bridge *deployed* has its own characteristic failures — an `arm64` image the
-platform refuses to start, a private registry it cannot pull from, a `401` caused by missing
-one of the two restarts a secret change needs.
+Getting the bridge *deployed* has its own characteristic failures: an `arm64` image the
+platform refuses to start, a private registry it cannot pull from, or a `401` caused by
+missing one of the two restarts a secret change needs.
 
 Those are documented where you hit them, with the commands to fix each one:
 
-- **[Things that went wrong for us]({{ '/deployment/azure.html' | relative_url }}#things-that-went-wrong-for-us)** — in the Azure guide, but the causes apply to any container platform
-- [OpenClaw setup and testing]({{ '/openclaw-setup.html' | relative_url }}) — for webhook route and secret problems on the OpenClaw side
+- **[Things that went wrong for us]({{ '/deployment/azure.html' | relative_url }}#things-that-went-wrong-for-us)**. It is in the Azure guide, but the causes apply to any container platform
+- [OpenClaw setup and testing]({{ '/openclaw-setup.html' | relative_url }}) covers gateway and secret problems on the OpenClaw side
 
 The rest of this page covers problems with a bridge that is already running.
 

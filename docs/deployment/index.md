@@ -9,7 +9,7 @@ Every guide below ends with the same result: the bridge running behind a public 
 that a Custom GPT Action can call, with a private path from the bridge to OpenClaw.
 
 Finish [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}) and
-[Step-by-step setup]({{ '/step-by-step.html' | relative_url }}) first — the deployment guides
+[Step-by-step setup]({{ '/step-by-step.html' | relative_url }}) first. The deployment guides
 assume you already have a working `.env` and a webhook OpenClaw answers.
 
 <div class="danger" markdown="1">
@@ -52,12 +52,12 @@ endpoint accepts anyone who finds the URL.
 |---|---|---|---|
 | [Google Cloud]({{ '/deployment/gcp.html' | relative_url }}) | Scale-to-zero container hosting | Managed | [Cloud Run]({{ '/deployment/gcp.html' | relative_url }}#free-tier-deployment-with-cloud-run) |
 | [Azure]({{ '/deployment/azure.html' | relative_url }}) | Container hosting, tested end to end | Managed | [Container Apps]({{ '/deployment/azure.html' | relative_url }}#free-tier-deployment-with-azure-container-apps) |
-| [AWS]({{ '/deployment/aws.html' | relative_url }}) | A plain VM you control | Caddy | — |
-| [DigitalOcean]({{ '/deployment/digital-ocean.html' | relative_url }}) | The simplest VM path | Caddy | — |
+| [AWS]({{ '/deployment/aws.html' | relative_url }}) | A plain VM you control | Caddy | none |
+| [DigitalOcean]({{ '/deployment/digital-ocean.html' | relative_url }}) | The simplest VM path | Caddy | none |
 
 If you have no preference, start with [the free options]({{ '/deployment/free-tier.html' | relative_url }}).
 
 ## After deploying
 
-- Point your Custom GPT Action at the new URL — see [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
+- Point your Custom GPT Action at the new URL. See [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
 - Something not working? [Troubleshooting]({{ '/troubleshooting.html' | relative_url }}) covers the common failures.
