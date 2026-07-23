@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Go race test
+        run: go test -race ./...
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Install PyYAML
+        run: python -m pip install --upgrade pyyaml
+
+      - name: Validate YAML files
+        run: |
+          python - <<'PY'
+          import sys
+          import yaml
+          from pathlib import Path
+
+
+          class StrictLoader(yaml.SafeLoader):
+              """SafeLoader that rejects duplicate mapping keys.
+
+              yaml.safe_load silently keeps the last of a repeated key, which let a
+              duplicated `goal` property sit in the OpenAPI spec while CI stayed
+              green. Duplicates are always a mistake here, so make them fatal.
+              """
+
+
+          def no_duplicate_keys(loader, node, deep=False):
+              mapping = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in mapping:
+                      raise yaml.constructor.ConstructorError(
+                          "while building a mapping",
+                          node.start_mark,
+                          f"duplicate key {key!r}",
+                          key_node.start_mark,
+                      )
+                  mapping[key] = loader.construct_object(value_node, deep=deep)
+              return mapping
+
+
+          StrictLoader.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicate_keys
+          )
+
+          failed = False
+          for path in [
+              "openapi/openclaw-bridge.openapi.yaml",
+              "chart/values.yaml",
+              "chart/values.azure.yaml",
+              "chart/values.alibaba.yaml",
+              ".github/workflows/ci.yml",
+              ".github/workflows/pages.yml",
+              "docs/_config.yml",
+          ]:
+              try:
+                  with open(Path(path), "r", encoding="utf-8") as f:
+                      yaml.load(f, Loader=StrictLoader)
+              except yaml.YAMLError as exc:
+                  failed = True
+                  print(f"FAIL {path}\n{exc}")
+              else:
+                  print(f"OK {path}")
+
+          sys.exit(1 if failed else 0)
+          PY
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Helm lint
+        run: helm lint ./chart
+
+      - name: Helm template default
+        run: helm template openclaw-bridge ./chart
+
+      - name: Helm template Azure
+        run: helm template openclaw-bridge ./chart -f chart/values.azure.yaml
+
+      - name: Helm template Alibaba
+        run: helm template openclaw-bridge ./chart -f chart/values.alibaba.yaml

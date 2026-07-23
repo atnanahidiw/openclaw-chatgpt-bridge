@@ -1,0 +1,5 @@
+{
+  "action": "ask",
+  "message": "In one sentence, confirm you are reachable and name your current working directory.",
+  "user": "conv:local-test"
+}

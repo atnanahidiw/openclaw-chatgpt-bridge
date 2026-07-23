@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111827">
+    <meta name="description" content="{{ page.description | default: site.description | escape }}">
+    <title>{% if page.title %}{{ page.title | escape }} · {% endif %}{{ site.title | escape }}</title>
+    <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+    <script src="{{ '/assets/js/site.js' | relative_url }}" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+
+    <div class="site-shell">
+      <aside class="sidebar" aria-label="Documentation navigation">
+        <a class="brand" href="{{ '/' | relative_url }}" aria-label="OpenClaw ChatGPT Bridge documentation home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" role="img">
+              <path d="M9.8 13.2c-1.8 0-3.3-1.8-3.3-4s1.5-4 3.3-4 3.3 1.8 3.3 4-1.5 4-3.3 4Zm12.4 0c-1.8 0-3.3-1.8-3.3-4s1.5-4 3.3-4 3.3 1.8 3.3 4-1.5 4-3.3 4ZM5.1 20c-1.5 0-2.7-1.4-2.7-3.2s1.2-3.2 2.7-3.2 2.7 1.4 2.7 3.2S6.6 20 5.1 20Zm21.8 0c-1.5 0-2.7-1.4-2.7-3.2s1.2-3.2 2.7-3.2 2.7 1.4 2.7 3.2-1.2 3.2-2.7 3.2ZM16 12.4c4.8 0 9 5.4 9 9.4 0 3.2-2.5 5-5.7 5-1.4 0-2.3-.5-3.3-.5s-1.9.5-3.3.5c-3.2 0-5.7-1.8-5.7-5 0-4 4.2-9.4 9-9.4Z"/>
+            </svg>
+          </span>
+          <span>
+            <strong>OpenClaw</strong>
+            <small>ChatGPT Bridge</small>
+          </span>
+        </a>
+
+        <nav class="nav-groups">
+          <div class="nav-group">
+            <p class="nav-label">Overview</p>
+            <a class="nav-link{% if page.url == '/' %} is-active{% endif %}" href="{{ '/' | relative_url }}">Introduction</a>
+            <a class="nav-link{% if page.url == '/usecases.html' %} is-active{% endif %}" href="{{ '/usecases.html' | relative_url }}">Use cases</a>
+            <div class="nav-submenu" aria-label="Use case sections">
+              <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#software-devops">Software &amp; DevOps</a>
+              <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#research-grants">Research &amp; grants</a>
+              <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#product-projects">Product &amp; projects</a>
+              <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#operations-admin">Operations &amp; admin</a>
+              <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#sales-support">Sales &amp; support</a>
+            </div>
+            <a class="nav-link{% if page.url == '/openclaw-setup.html' %} is-active{% endif %}" href="{{ '/openclaw-setup.html' | relative_url }}">OpenClaw setup</a>
+            <a class="nav-link{% if page.url == '/step-by-step.html' %} is-active{% endif %}" href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
+            <a class="nav-link{% if page.url == '/custom-gpt.html' %} is-active{% endif %}" href="{{ '/custom-gpt.html' | relative_url }}">Custom GPT setup</a>
+            <a class="nav-link{% if page.url == '/troubleshooting.html' %} is-active{% endif %}" href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
+          </div>
+
+          <div class="nav-group">
+            <p class="nav-label">Deploy</p>
+            <a class="nav-link{% if page.url == '/deployment/' %} is-active{% endif %}" href="{{ '/deployment/' | relative_url }}">Choose a deployment target</a>
+            <a class="nav-link{% if page.url == '/deployment/free-tier.html' %} is-active{% endif %}" href="{{ '/deployment/free-tier.html' | relative_url }}">Free options</a>
+          </div>
+        </nav>
+
+        <a class="repo-link" href="https://github.com/atnanahidiw/openclaw-chatgpt-bridge">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .7a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.2.8-.6v-2.2c-3.4.7-4.1-1.4-4.1-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.8.1-.8 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.4-5.5-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.6.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0C17.1 4.8 18 5 18 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.8 5.4-5.5 5.7.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.5 11.5 0 0 0 12 .7Z"/></svg>
+          View on GitHub
+        </a>
+      </aside>
+
+      <header class="mobile-header">
+        <a class="mobile-brand" href="{{ '/' | relative_url }}"><span>🐾</span> OpenClaw</a>
+        <details class="mobile-menu">
+          <summary aria-label="Open navigation">Menu</summary>
+          <nav aria-label="Documentation navigation">
+            <p class="nav-label">Overview</p>
+            <a{% if page.url == '/' %} class="is-active" aria-current="page"{% endif %} href="{{ '/' | relative_url }}">Introduction</a>
+            <a{% if page.url == '/usecases.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/usecases.html' | relative_url }}">Use cases</a>
+            <a{% if page.url == '/openclaw-setup.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/openclaw-setup.html' | relative_url }}">OpenClaw setup</a>
+            <a{% if page.url == '/step-by-step.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
+            <a{% if page.url == '/custom-gpt.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/custom-gpt.html' | relative_url }}">Custom GPT setup</a>
+            <a{% if page.url == '/troubleshooting.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
+
+            <p class="nav-label">Deploy</p>
+            <a{% if page.url == '/deployment/' %} class="is-active" aria-current="page"{% endif %} href="{{ '/deployment/' | relative_url }}">Choose a deployment target</a>
+            <a{% if page.url == '/deployment/free-tier.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/deployment/free-tier.html' | relative_url }}">Free options</a>
+          </nav>
+        </details>
+      </header>
+
+      <main id="content" class="main-content">
+        <article class="doc-content{% if page.url == '/' %} landing-page{% endif %}">
+          {{ content }}
+        </article>
+        <footer class="content-footer">
+          <span>OpenClaw ChatGPT Bridge</span>
+          <a href="https://github.com/atnanahidiw/openclaw-chatgpt-bridge/issues">Report an issue</a>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,90 @@
+#
+# Legacy example only.
+# Prefer Helm chart in chart/ for production.
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge-with-tailscale
+  namespace: openclaw-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bridge-with-tailscale
+  template:
+    metadata:
+      labels:
+        app: bridge-with-tailscale
+    spec:
+      containers:
+        - name: bridge
+          image: ghcr.io/your-org/openclaw-chatgpt-bridge:latest
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: bridge-config
+            - secretRef:
+                name: bridge-secrets
+          env:
+            - name: OPENCLAW_WEBHOOK_URL
+              value: "http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt"
+            - name: ADDR
+              value: ":8080"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
+        - name: tailscale
+          image: tailscale/tailscale:stable
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          env:
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: tailscale-auth
+                  key: TS_AUTHKEY
+            - name: TS_HOSTNAME
+              value: openclaw-bridge
+            - name: TS_STATE_DIR
+              value: /var/lib/tailscale
+            - name: TS_KUBE_SECRET
+              value: ""
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_USERSPACE
+              value: "true"
+          volumeMounts:
+            - name: tailscale-state
+              mountPath: /var/lib/tailscale
+
+      volumes:
+        - name: tailscale-state
+          emptyDir: {}

@@ -1,0 +1,300 @@
+openapi: 3.1.0
+info:
+  title: OpenClaw ChatGPT Bridge
+  version: 2.0.0
+  description: >
+    Delegate work to an OpenClaw agent. The bridge forwards each request to
+    OpenClaw's Gateway, which runs a real agent turn with its tools and skills,
+    and returns what the agent said.
+
+
+    Use `ask` for quick questions, `ask_async` plus `get_result` for anything
+    that takes real work.
+servers:
+  - url: https://bridge.example.com
+security:
+  - api_key: []
+paths:
+  /v1/openclaw:
+    post:
+      operationId: sendToOpenClaw
+      summary: Send an instruction to the OpenClaw agent
+      description: >
+        Runs an OpenClaw agent turn and returns the agent's reply. OpenClaw can
+        read and write files, run shell commands, and use its configured skills,
+        so treat it as an assistant that acts rather than one that only answers.
+      # ChatGPT treats every non-GET operation as consequential by default, which
+      # forces a confirmation dialog on every call and hides the "Always Allow"
+      # button. Setting this to false lets the user grant standing permission.
+      #
+      # Understand what that permits: this one operation carries ask, ask_async
+      # and get_result, so approving it once approves everything the agent can
+      # do, including shell commands on the machine running OpenClaw. Set it
+      # back to true if you would rather confirm each call.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - action
+              properties:
+                action:
+                  type: string
+                  enum:
+                    - ask
+                    - ask_async
+                    - get_result
+                  description: >
+                    ask runs a turn and waits for the reply. ask_async starts a
+                    turn and returns a jobId immediately. get_result reads an
+                    async turn's reply by jobId.
+                message:
+                  type: string
+                  description: >
+                    What OpenClaw should do, in plain language. Required for ask
+                    and ask_async. Be specific: it is executing, not chatting.
+                jobId:
+                  type: string
+                  description: >
+                    Identifier returned by ask_async. Required for get_result.
+                customSession:
+                  type: string
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+                  default: openclaw-bridge
+                  description: >
+                    Which OpenClaw session this work belongs to. Always send it;
+                    the default below is the right value unless the user asks for
+                    a separate line of work.
+
+
+                    You pass only a name. The bridge places it inside its own
+                    namespace, so "openclaw-bridge" becomes
+                    agent:main:chatgpt:openclaw-bridge. Omit it entirely and the
+                    work goes to agent:main:chatgpt instead.
+
+
+                    Set the default here, once, per Custom GPT. This schema is
+                    where that choice lives, not the instructions. A stable value
+                    such as the GPT's own id keeps one GPT's work together and
+                    separate from every other GPT's.
+
+
+                    Letters, digits, dot, dash and underscore only. Colons are
+                    rejected: the namespace is not yours to choose.
+            examples:
+              ask:
+                summary: A quick question, in the default session
+                value:
+                  action: ask
+                  message: Summarize the deployment docs and list anything out of date.
+                  customSession: openclaw-bridge
+              askAsync:
+                summary: Start longer work in its own named session
+                value:
+                  action: ask_async
+                  message: Review the repository and list release blockers.
+                  customSession: release-review
+              getResult:
+                summary: Collect the reply from an async turn
+                value:
+                  action: get_result
+                  jobId: a15b1d0cac4056c23c415f65
+      responses:
+        "200":
+          description: >
+            The turn finished (ask), an async turn was accepted (ask_async), or
+            the job's current state was read (get_result). Everything that
+            succeeds returns 200; check the status field rather than the code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeReply"
+              examples:
+                accepted:
+                  summary: ask_async accepted the work
+                  value:
+                    ok: true
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: running
+                    sessionKey: agent:main:chatgpt
+                    hint: poll get_result with this jobId until status is done or failed
+                answered:
+                  summary: ask returned a reply
+                  value:
+                    ok: true
+                    bridge: openclaw-chatgpt-bridge
+                    reply: The deployment docs are current except the AWS page.
+                    sessionKey: agent:main:chatgpt
+                stillRunning:
+                  summary: get_result while the turn is still going
+                  value:
+                    ok: true
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: running
+                    elapsedMs: 8400
+                    hint: still running; poll again in a few seconds
+                failed:
+                  summary: get_result for a turn that failed
+                  value:
+                    ok: false
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: failed
+                    error: OpenClaw did not reply in time
+                    hint: this turn will not complete; read error and retry only if it is transient
+        "400":
+          description: The body was not a single JSON object, or it failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+              examples:
+                missingMessage:
+                  value:
+                    ok: false
+                    error: invalid request
+                    details:
+                      - message is required for ask
+        "401":
+          description: >
+            The api_key was missing or wrong. This is the bridge rejecting the
+            caller, not OpenClaw rejecting the bridge.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+              examples:
+                unauthorized:
+                  value:
+                    ok: false
+                    error: unauthorized
+        "404":
+          description: The jobId is unknown. It may have expired, or the bridge restarted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "405":
+          description: Method other than POST.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "413":
+          description: Body exceeded MAX_BODY_BYTES.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "500":
+          description: >
+            The bridge is misconfigured. For example, its gateway URL is unset,
+            or OpenClaw rejected the bridge's own credential. Nothing the caller
+            can fix by retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "502":
+          description: OpenClaw was unreachable, or returned something unusable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "504":
+          description: >
+            The turn exceeded REQUEST_TIMEOUT_MS. Use ask_async for work that
+            takes this long.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+
+components:
+  securitySchemes:
+    api_key:
+      type: apiKey
+      in: header
+      name: api_key
+      description: >
+        Shared secret between the Custom GPT and the bridge, set as BRIDGE_API_KEY
+        on the bridge. In the ChatGPT Action builder choose Authentication ->
+        API Key -> Auth Type "Custom", and set the custom header name to api_key.
+        The bridge also accepts the same value as Authorization: Bearer <key>,
+        which is handy for curl.
+
+  schemas:
+    BridgeReply:
+      type: object
+      additionalProperties: true
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+          description: False when the request failed or an async turn failed.
+        bridge:
+          type: string
+          description: Bridge service name.
+        reply:
+          type: string
+          description: >
+            What the OpenClaw agent said. Present on a successful ask, and on
+            get_result once status is done.
+        jobId:
+          type: string
+          description: Async job identifier. Present for ask_async and get_result.
+        status:
+          type: string
+          enum:
+            - running
+            - done
+            - failed
+          description: State of an async turn.
+        sessionKey:
+          type: string
+          description: >
+            The full OpenClaw session key the turn ran in, after the bridge
+            applied its namespace. Echoed back so you can see where the work
+            landed.
+        startedAt:
+          type: string
+          format: date-time
+          description: When the async turn started.
+        failedAt:
+          type: string
+          format: date-time
+          description: When the async turn failed, if it did.
+        elapsedMs:
+          type: integer
+          description: How long the turn has run, or did run.
+        error:
+          type: string
+          description: Why it failed, in plain language.
+        hint:
+          type: string
+          description: What to do next. Follow it rather than guessing.
+
+    BridgeError:
+      type: object
+      additionalProperties: true
+      required:
+        - ok
+        - error
+      properties:
+        ok:
+          type: boolean
+          description: Always false on error responses.
+        error:
+          type: string
+          description: Short, human-readable reason.
+        details:
+          type: array
+          items:
+            type: string
+          description: >
+            Present only on validation failures. Lists every problem found, not
+            just the first, so all of them can be fixed in one retry.

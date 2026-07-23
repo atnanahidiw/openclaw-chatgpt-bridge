@@ -1,0 +1,10 @@
+.git
+.DS_Store
+README.md
+docs
+payloads
+openapi
+test
+*.exe
+*.test
+*.out
