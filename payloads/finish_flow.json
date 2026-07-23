@@ -1,8 +1,0 @@
-{
-  "action": "finish_flow",
-  "flowId": "flow_12345",
-  "expectedRevision": 4,
-  "metadata": {
-    "result": "MVP code generated and tests passed"
-  }
-}

@@ -191,13 +191,13 @@ Ask the OpenClaw owner for one of these:
 The address may look like this:
 
 ```text
-http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
+http://openclaw-gateway.tailnet:18789
 ```
 
 Or, if you only have an IP address:
 
 ```text
-http://100.x.x.x:18789/plugins/webhooks/gpt
+http://100.x.x.x:18789
 ```
 
 Think of this as the bridge's private back door to OpenClaw.
@@ -233,8 +233,8 @@ Now create an `.env` file:
 ```bash
 sudo tee .env >/dev/null <<'EOF'
 ADDR=127.0.0.1:8080
-OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
-OPENCLAW_WEBHOOK_SECRET=replace-with-a-long-random-secret
+OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
+OPENCLAW_GATEWAY_TOKEN=replace-with-gateway-auth-token
 OPENCLAW_SESSION_KEY=agent:main:main
 BRIDGE_API_KEY=replace-with-a-long-random-secret
 REQUEST_TIMEOUT_MS=30000
@@ -246,7 +246,7 @@ EOF
 
 Every setting is explained once in
 **[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
-which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_WEBHOOK_SECRET` are two
+which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_GATEWAY_TOKEN` are two
 different secrets rather than one.
 
 Three things are specific to this VM setup:
@@ -261,7 +261,8 @@ Generate the two secrets rather than inventing them:
 
 ```bash
 openssl rand -hex 32   # BRIDGE_API_KEY
-openssl rand -hex 32   # OPENCLAW_WEBHOOK_SECRET, must match OpenClaw's own .env
+# OPENCLAW_GATEWAY_TOKEN is not generated: copy gateway.auth.token
+# from ~/.openclaw/openclaw.json
 ```
 
 Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
@@ -354,7 +355,8 @@ Run this command:
 ```bash
 curl -X POST https://bridge.yourdomain.com/v1/openclaw \
   -H 'content-type: application/json' \
-  --data '{"action":"create_flow","goal":"test"}'
+  -H "api_key: $BRIDGE_API_KEY" \
+  --data '{"action":"ask","message":"Confirm you are reachable."}'
 ```
 
 If it works, the bridge is ready.
@@ -500,8 +502,8 @@ setting means and how to generate `BRIDGE_API_KEY`.
 ```bash
 set -a; . ./.env; set +a
 
-: "${OPENCLAW_WEBHOOK_URL:?set it in .env}"
-: "${OPENCLAW_WEBHOOK_SECRET:?set it in .env}"
+: "${OPENCLAW_GATEWAY_URL:?set it in .env}"
+: "${OPENCLAW_GATEWAY_TOKEN:?set it in .env}"
 : "${BRIDGE_API_KEY:?set it in .env}"
 : "${TS_AUTHKEY:?set it in .env}"
 ```
@@ -509,8 +511,8 @@ set -a; . ./.env; set +a
 Now store the secrets, taking two of them straight from `.env`:
 
 ```bash
-printf '%s' "$OPENCLAW_WEBHOOK_SECRET" \
-  | gcloud secrets create openclaw-webhook-secret --data-file=-
+printf '%s' "$OPENCLAW_GATEWAY_TOKEN" \
+  | gcloud secrets create gateway-token --data-file=-
 
 printf '%s' "$BRIDGE_API_KEY" \
   | gcloud secrets create bridge-api-key --data-file=-
@@ -525,7 +527,7 @@ Let Cloud Run read them:
 PROJECT_NUMBER="$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')"
 SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
-for SECRET in tailscale-authkey openclaw-webhook-secret bridge-api-key; do
+for SECRET in tailscale-authkey gateway-token bridge-api-key; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
     --member="serviceAccount:${SERVICE_ACCOUNT}" \
     --role="roles/secretmanager.secretAccessor"
@@ -682,22 +684,22 @@ gcloud run deploy openclaw-bridge \
   --max-instances 3 \
   --memory 256Mi \
   --set-env-vars 'ADDR=:8080' \
-  --set-env-vars "OPENCLAW_WEBHOOK_URL=$OPENCLAW_WEBHOOK_URL" \
+  --set-env-vars "OPENCLAW_GATEWAY_URL=$OPENCLAW_GATEWAY_URL" \
   --set-env-vars "OPENCLAW_SESSION_KEY=$OPENCLAW_SESSION_KEY" \
   --set-env-vars "REQUEST_TIMEOUT_MS=$REQUEST_TIMEOUT_MS" \
   --set-env-vars 'TAILSCALE_ENABLED=true' \
   --set-env-vars 'TAILSCALE_PROXY_ADDR=127.0.0.1:1055' \
   --set-secrets 'TAILSCALE_AUTHKEY=tailscale-authkey:latest' \
-  --set-secrets 'OPENCLAW_WEBHOOK_SECRET=openclaw-webhook-secret:latest' \
+  --set-secrets 'OPENCLAW_GATEWAY_TOKEN=gateway-token:latest' \
   --set-secrets 'BRIDGE_API_KEY=bridge-api-key:latest'
 ```
 
-Replace the `OPENCLAW_WEBHOOK_URL` value with your real OpenClaw tailnet address.
+Replace the `OPENCLAW_GATEWAY_URL` value with your real OpenClaw Gateway address.
 
 If OpenClaw sits behind `tailscale serve`, the address is **https with no port**. Check it with `tailscale serve status` on the OpenClaw machine, and use that form instead:
 
 ```text
-OPENCLAW_WEBHOOK_URL=https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
 ```
 
 The `Dockerfile.cloudrun` above installs `ca-certificates` so the bridge can verify that certificate.
@@ -720,7 +722,7 @@ The bridge is still protected, because OpenClaw only accepts calls carrying the 
 The bridge binds the address in `ADDR`. It reads `PORT` but does not use it for binding.
 Cloud Run sets `PORT` automatically, and that alone will not move the bridge — so keep `--port 8080` and `ADDR=:8080` matched.
 
-**`OPENCLAW_WEBHOOK_URL` must not be `localhost`.**
+**`OPENCLAW_GATEWAY_URL` must not be `localhost`.**
 Go never sends requests for `localhost` or `127.0.0.1` through `HTTP_PROXY`, no matter how the proxy is configured.
 If you point the bridge at a loopback address it will quietly skip Tailscale and fail to reach OpenClaw.
 Always use the tailnet hostname or the `100.x.x.x` address.
@@ -753,7 +755,8 @@ If it returns `tailscale proxy not ready`, your auth key is wrong or expired.
 ```bash
 curl -X POST https://openclaw-bridge-abc123-uc.a.run.app/v1/openclaw \
   -H 'content-type: application/json' \
-  --data '{"action":"create_flow","goal":"test"}'
+  -H "api_key: $BRIDGE_API_KEY" \
+  --data '{"action":"ask","message":"Confirm you are reachable."}'
 ```
 
 If it works, the bridge is ready.
@@ -817,7 +820,7 @@ If that first slow call ever causes a ChatGPT Action to time out, you have two o
 - [ ] Service deployed with `--allow-unauthenticated`
 - [ ] `/healthz` returns JSON
 - [ ] `/readyz` reports ready, proving Tailscale connected
-- [ ] `OPENCLAW_WEBHOOK_URL` uses a tailnet address, not localhost
+- [ ] `OPENCLAW_GATEWAY_URL` uses a tailnet address, not localhost
 - [ ] Custom GPT action imported and pointed at the Cloud Run URL
 
 ### Short summary

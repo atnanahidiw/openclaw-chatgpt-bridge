@@ -13,6 +13,29 @@ description: Connect ChatGPT Actions to OpenClaw with a small, secure Go bridge.
   </div>
 </section>
 
+<div class="danger" markdown="1">
+<div markdown="1">
+<span class="danger-title">Security warning — read before deploying</span>
+
+This bridge deliberately exposes a path from the public internet into your OpenClaw agent.
+
+**The bridge endpoint is public.** A Custom GPT Action can only call a publicly reachable
+HTTPS URL. The only thing between the internet and your OpenClaw is `BRIDGE_API_KEY`. Leave
+it unset and the endpoint accepts anyone who finds the URL.
+
+**Whoever holds that key can act as you**, with whatever permissions the target agent has.
+Bind the OpenClaw webhook route to the narrowest session that fits.
+
+**The execution ingress is full operator access.** Enabling the Gateway's
+`/v1/chat/completions` endpoint grants callers the complete operator scope set with owner
+semantics. OpenClaw's own docs say to keep it on loopback or a private tailnet and never
+expose it publicly — the bridge is what holds that boundary.
+
+Full detail in [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) and
+[Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
+</div>
+</div>
+
 <h2 class="section-heading">Get started</h2>
 <div class="card-grid">
   <a class="doc-card" href="{{ '/openclaw-setup.html' | relative_url }}">
@@ -34,11 +57,6 @@ description: Connect ChatGPT Actions to OpenClaw with a small, secure Go bridge.
     <span class="card-icon">03</span>
     <strong>Explore use cases</strong>
     <span>See how the bridge supports engineering, operations, research, and more.</span>
-  </a>
-  <a class="doc-card" href="{{ '/commands.html' | relative_url }}">
-    <span class="card-icon">⌘</span>
-    <strong>Commands</strong>
-    <span>Copy the commands for local development, Docker, and Kubernetes.</span>
   </a>
   <a class="doc-card" href="{{ '/troubleshooting.html' | relative_url }}">
     <span class="card-icon">?</span>

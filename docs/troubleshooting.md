@@ -22,51 +22,67 @@ If Go is missing, install it before trying again.
 
 ---
 
-## `OPENCLAW_WEBHOOK_URL is not set`
+## `OPENCLAW_GATEWAY_URL is not set`
 
-This means the bridge does not know where to send requests.
+The bridge does not know which OpenClaw Gateway to call.
 
 ### Fix
 
-Set this in `.env` or in your deployment config:
+Set it in `.env` or your deployment config. It is the Gateway base URL, without a path —
+the bridge appends `/v1/chat/completions` itself:
 
 ```bash
-OPENCLAW_WEBHOOK_URL=http://your-openclaw-address/plugins/webhooks/gpt
+OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
 ```
 
-If OpenClaw is private, use the Tailscale hostname or IP.
+Behind `tailscale serve` this is **https with no port**. Check with `tailscale serve status`.
 
 ---
 
-## `create_flow` says `goal is required`
+## `invalid request` with a details list
 
-This usually means the request used the wrong field.
-
-### Correct example
+The body was missing a required field. The `details` array names every problem at once:
 
 ```json
 {
-  "action": "create_flow",
-  "goal": "Build a UMKM finance app MVP"
+  "ok": false,
+  "error": "invalid request",
+  "details": ["message is required for ask"]
 }
 ```
 
-For `create_flow`, use `goal`, not `task`.
+Required fields:
+
+- `ask` and `ask_async` need `message`
+- `get_result` needs `jobId`
+
+`sessionKey` must not use the reserved namespaces `subagent:`, `cron:`, or `acp:`.
 
 ---
 
-## Validation errors
+## The turn times out
 
-Common causes:
+A `504` means the turn exceeded `REQUEST_TIMEOUT_MS`.
 
-- missing `action`
-- `create_flow` without `goal`
-- `run_task` without `flowId`
-- `run_task` without `task`
+Even a trivial question takes roughly 30 seconds, because a real agent turn is starting.
+Anything that reads files, searches, or runs commands takes far longer.
 
-### What to do
+### Fix
 
-Check the JSON you send to `/v1/openclaw` and make sure the required fields are present.
+Use `ask_async` and poll `get_result`. Raising `REQUEST_TIMEOUT_MS` helps a little, but a
+Custom GPT Action gives up before a long turn finishes regardless, so async is the real
+answer.
+
+---
+
+## `404` on `get_result`
+
+The `jobId` is unknown. Either it expired past `JOB_TTL_MS`, or the bridge restarted.
+
+**Async jobs live in memory.** They do not survive a restart, and a second replica cannot
+see the first replica's jobs. Run a single replica — on Azure Container Apps that means
+`--max-replicas 1`. With more than one, a poll can land on the wrong replica and 404 a job
+that is running perfectly well.
 
 ---
 
@@ -89,8 +105,8 @@ This means the bridge reached OpenClaw, but OpenClaw said “no”.
 
 ### Common reasons
 
-- wrong `OPENCLAW_WEBHOOK_SECRET`
-- wrong auth header expected by OpenClaw
+- wrong `OPENCLAW_GATEWAY_TOKEN`
+- the Gateway's chat completions endpoint is disabled
 - OpenClaw returned an error for another reason
 
 ---
@@ -110,27 +126,26 @@ The rest of this page covers problems with a bridge that is already running.
 
 ---
 
-## `401 unauthorized` from the bridge itself
+## Telling the two credentials apart
 
-There are **two** different 401s in this system. Tell them apart by the response body.
+There are two secrets and they fail differently.
 
-| Body | Who rejected you | Fix |
+| Symptom | Who rejected it | Fix |
 |---|---|---|
-| `{"ok":false,"error":"unauthorized"}` | The **bridge**. Your caller did not present a valid `api_key` | Send `api_key: <BRIDGE_API_KEY>`, or `Authorization: Bearer <key>`. In a Custom GPT this is the Action's API Key credential |
-| `{"ok":false,"error":"OpenClaw returned non-2xx status","upstreamStatus":401,...}` | **OpenClaw**. The bridge reached it but its webhook secret was wrong | Match `OPENCLAW_WEBHOOK_SECRET` to what OpenClaw resolves, and restart both sides |
+| `401` with `{"ok":false,"error":"unauthorized"}` | The **bridge** rejected your caller | Send `api_key: <BRIDGE_API_KEY>`, or `Authorization: Bearer <key>`. In a Custom GPT this is the Action's API Key credential |
+| `500` with `"OpenClaw rejected the bridge's gateway token"` | **OpenClaw** rejected the bridge | `OPENCLAW_GATEWAY_TOKEN` does not match `gateway.auth.token` in `~/.openclaw/openclaw.json` |
 
-The first has no `upstreamStatus` field, because the request never left the bridge.
+The distinction matters: a `401` is the caller's problem, a `500` is the operator's. A GPT
+should retry neither.
 
 ### The key is set but still rejected
 
-`BRIDGE_API_KEY` is read once at startup. Setting it without restarting leaves the old
-value, or none at all, in the running process. Redeploy or restart the revision.
-
-To confirm what the bridge thinks:
+Both are read once at startup. Setting either without restarting leaves the old value in
+the running process. Redeploy or restart the revision.
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
-  -H 'content-type: application/json' -d '{"action":"get_flow","flowId":"probe"}'
+  -H 'content-type: application/json' -d '{"action":"ask","message":"ping"}'
 ```
 
 `401` means a key is configured and enforced. `200` means no key is set and the endpoint is
@@ -140,7 +155,7 @@ open to anyone who knows the URL.
 
 ## `x509: certificate signed by unknown authority`
 
-This means `OPENCLAW_WEBHOOK_URL` is an `https` address and the bridge container has no CA trust store.
+This means `OPENCLAW_GATEWAY_URL` is an `https` address and the bridge container has no CA trust store.
 
 It shows up most often when OpenClaw sits behind `tailscale serve`, because that fronts OpenClaw on HTTPS instead of its plain HTTP port.
 
@@ -172,10 +187,10 @@ https://your-host.your-tailnet.ts.net (tailnet only)
 So the value to use is:
 
 ```bash
-OPENCLAW_WEBHOOK_URL=https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
 ```
 
-Not `http://your-host:18789/...`. Plain HTTP on port 80 does not answer, and the raw port is not exposed to the tailnet.
+Not `http://your-host:18789`. Plain HTTP on port 80 does not answer, and the raw port is not exposed to the tailnet.
 
 Requests to an `https` upstream travel through `HTTPS_PROXY`, so set both `HTTP_PROXY` and `HTTPS_PROXY` when using userspace Tailscale.
 
@@ -206,7 +221,7 @@ If the bridge cannot reach OpenClaw through Tailscale:
 
 - check `TS_AUTHKEY`
 - check whether the Droplet appears in the tailnet
-- check whether `OPENCLAW_WEBHOOK_URL` uses the right tailnet hostname or IP
+- check whether `OPENCLAW_GATEWAY_URL` uses the right tailnet hostname or IP
 
 ---
 
@@ -237,15 +252,11 @@ If you cannot find a request in logs, set `X-Request-ID` on the inbound request 
 
 ## 401 or 403 from OpenClaw
 
-Likely causes:
+Likely cause: `OPENCLAW_GATEWAY_TOKEN` does not match `gateway.auth.token` in
+`~/.openclaw/openclaw.json`.
 
-- wrong `OPENCLAW_WEBHOOK_SECRET`
-- OpenClaw expects a different auth header
-
-The bridge sends both:
-
-- `Authorization: Bearer ***`
-- `x-openclaw-webhook-secret: ...`
+The bridge sends `Authorization: Bearer <token>` to the Gateway. If OpenClaw rejects it the
+bridge reports a `500`, because the caller did nothing wrong.
 
 ---
 

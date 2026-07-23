@@ -1,9 +1,0 @@
-{
-  "action": "create_flow",
-  "goal": "Build a UMKM finance app MVP with income, expense, cashflow, and simple reports",
-  "notifyPolicy": "done_only",
-  "metadata": {
-    "source": "chatgpt-action",
-    "priority": "normal"
-  }
-}

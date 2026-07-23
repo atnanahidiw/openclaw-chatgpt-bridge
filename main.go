@@ -1,27 +1,34 @@
 // Command openclaw-chatgpt-bridge is an HTTP service that sits between a
-// ChatGPT Custom GPT Action and an OpenClaw webhook.
+// ChatGPT Custom GPT Action and an OpenClaw Gateway.
 //
 // The request flow, and the order of this file, is:
 //
 //	main       -> start the server, shut down cleanly on SIGINT/SIGTERM
 //	config     -> read every environment variable once, at startup
 //	routing    -> /healthz, /readyz, /version, /v1/openclaw
-//	handling   -> authenticate, decode, normalize, validate, forward, respond
 //	auth       -> the shared api_key callers must present
-//	payload    -> the request contract: allowed actions and required fields
-//	forwarding -> the single hop to OpenClaw
+//	handling   -> authenticate, decode, validate, dispatch, respond
+//	payload    -> the request contract: ask, ask_async, get_result
+//	jobs       -> in-memory store backing the async actions
+//	gateway    -> the single hop to OpenClaw's chat completions endpoint
 //	helpers    -> JSON encode/decode plumbing
 //
-// The service is stateless: no database, no sessions. Inbound callers are
-// authenticated with a shared key when BRIDGE_API_KEY is set; the separate
-// OPENCLAW_WEBHOOK_SECRET is what the bridge presents to OpenClaw.
+// The bridge calls OpenClaw's OpenAI-compatible endpoint, which runs a real
+// agent turn — tools, skills and all — and returns what the agent said. That
+// endpoint is full operator access, so the gateway token stays private here
+// and callers are re-authenticated with BRIDGE_API_KEY.
+//
+// Async jobs live in memory. A restart drops them, and a second replica cannot
+// see the first replica's jobs, so run a single replica.
 package main
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,6 +39,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -50,21 +58,28 @@ var (
 func main() {
 	cfg := loadConfig()
 
-	// The bridge attaches the OpenClaw webhook secret itself, so without an
-	// inbound key anyone who learns the URL can drive TaskFlows. Say so loudly
-	// rather than failing silently open.
+	// Without an inbound key anyone who learns the URL can drive the agent,
+	// because the bridge supplies the gateway token itself.
 	if cfg.bridgeAPIKey == "" {
 		log.Printf("WARNING: BRIDGE_API_KEY is not set; POST /v1/openclaw accepts unauthenticated requests")
 	}
+	if cfg.gatewayToken == "" {
+		log.Printf("WARNING: OPENCLAW_GATEWAY_TOKEN is not set; every OpenClaw call will fail authentication")
+	}
 
-	mux := newMux(cfg)
+	jobs := newJobStore(cfg.jobTTL)
+	stopJanitor := jobs.startJanitor(cfg.jobTTL / 4)
+	defer stopJanitor()
+
 	srv := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           mux,
+		Handler:           newMux(cfg, jobs),
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       cfg.requestTimeout,
-		WriteTimeout:      cfg.requestTimeout,
-		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// A sync turn can legitimately take minutes, so the write budget has
+		// to exceed the sync timeout or the response is cut off mid-flight.
+		WriteTimeout: cfg.requestTimeout + 30*time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -101,14 +116,18 @@ func main() {
 
 type config struct {
 	serviceName    string
-	port           int
 	addr           string
 	requestTimeout time.Duration
+	asyncTimeout   time.Duration
+	jobTTL         time.Duration
 	maxBodyBytes   int64
 
-	openclawWebhookURL string
-	openclawSecret     string
-	sessionKey         string
+	// OpenClaw Gateway base URL, e.g. https://host.tailnet.ts.net. The bridge
+	// appends /v1/chat/completions itself.
+	gatewayURL   string
+	gatewayToken string
+	agentTarget  string
+	sessionKey   string
 
 	// Shared secret callers must present on /v1/openclaw. Empty disables the
 	// check, which leaves the endpoint open to anyone who knows the URL.
@@ -121,26 +140,32 @@ type config struct {
 }
 
 func loadConfig() config {
-	timeout := time.Duration(envInt("REQUEST_TIMEOUT_MS", 30000)) * time.Millisecond
-
-	// The listener binds addr, not port. Use ":8080" to be reachable across the
-	// pod network or a tailnet; bind 127.0.0.1 only behind a local proxy.
 	return config{
-		serviceName:    "openclaw-chatgpt-bridge",
-		port:           envInt("PORT", 8080),
-		addr:           envString("ADDR", ":8080"),
-		requestTimeout: timeout,
+		serviceName: "openclaw-chatgpt-bridge",
+		// The listener binds addr, not port. Use ":8080" to be reachable
+		// across the pod network or a tailnet; bind 127.0.0.1 only behind a
+		// local proxy.
+		addr: envString("ADDR", ":8080"),
+		// A trivial turn takes seconds; one that runs commands or edits files
+		// takes far longer, so the sync budget is generous by default.
+		requestTimeout: time.Duration(envInt("REQUEST_TIMEOUT_MS", 120000)) * time.Millisecond,
+		asyncTimeout:   time.Duration(envInt("ASYNC_TIMEOUT_MS", 900000)) * time.Millisecond,
+		jobTTL:         time.Duration(envInt("JOB_TTL_MS", 3600000)) * time.Millisecond,
 		maxBodyBytes:   int64(envInt("MAX_BODY_BYTES", 1024*1024)),
 
-		openclawWebhookURL: strings.TrimSpace(os.Getenv("OPENCLAW_WEBHOOK_URL")),
-		openclawSecret:     strings.TrimSpace(os.Getenv("OPENCLAW_WEBHOOK_SECRET")),
-		sessionKey:         strings.TrimSpace(os.Getenv("OPENCLAW_SESSION_KEY")),
-		bridgeAPIKey:       strings.TrimSpace(os.Getenv("BRIDGE_API_KEY")),
+		gatewayURL:   strings.TrimRight(strings.TrimSpace(os.Getenv("OPENCLAW_GATEWAY_URL")), "/"),
+		gatewayToken: strings.TrimSpace(os.Getenv("OPENCLAW_GATEWAY_TOKEN")),
+		agentTarget:  envString("OPENCLAW_AGENT", "openclaw/default"),
+		sessionKey:   strings.TrimSpace(os.Getenv("OPENCLAW_SESSION_KEY")),
+
+		bridgeAPIKey: strings.TrimSpace(os.Getenv("BRIDGE_API_KEY")),
 
 		tailscaleEnabled:   strings.EqualFold(strings.TrimSpace(os.Getenv("TAILSCALE_ENABLED")), "true"),
 		tailscaleProxyAddr: envString("TAILSCALE_PROXY_ADDR", "127.0.0.1:1055"),
 
-		httpClient: &http.Client{Timeout: timeout},
+		// Timeout is applied per call, because async turns need a longer
+		// budget than sync ones.
+		httpClient: &http.Client{},
 	}
 }
 
@@ -172,7 +197,7 @@ func envInt(name string, fallback int) int {
 // Routing
 // ---------------------------------------------------------------------------
 
-func newMux(cfg config) *http.ServeMux {
+func newMux(cfg config, jobs *jobStore) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Liveness: the process is up.
@@ -183,7 +208,7 @@ func newMux(cfg config) *http.ServeMux {
 		})
 	})
 
-	// Readiness: the process is up *and* the upstream path is dialable.
+	// Readiness: the process is up *and* the private path out is dialable.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if cfg.tailscaleEnabled {
 			conn, err := net.DialTimeout("tcp", cfg.tailscaleProxyAddr, 500*time.Millisecond)
@@ -205,7 +230,7 @@ func newMux(cfg config) *http.ServeMux {
 	mux.HandleFunc("/version", versionHandler)
 
 	mux.HandleFunc("/v1/openclaw", func(w http.ResponseWriter, r *http.Request) {
-		handleOpenClaw(w, r, cfg)
+		handleOpenClaw(w, r, cfg, jobs)
 	})
 
 	return mux
@@ -229,162 +254,12 @@ func versionHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Request handling
-// ---------------------------------------------------------------------------
-
-// handleOpenClaw is the only functional route. It decodes the GPT Action body,
-// normalizes and validates it, forwards it to OpenClaw, and mirrors the
-// upstream status and body back to the caller.
-func handleOpenClaw(w http.ResponseWriter, r *http.Request, cfg config) {
-	start := time.Now()
-
-	// Propagate the caller's trace ID upstream, or mint one if absent.
-	requestID := strings.TrimSpace(r.Header.Get("x-request-id"))
-	if requestID == "" {
-		requestID = strconv.FormatInt(time.Now().UnixNano(), 10)
-	}
-
-	// Every request emits exactly one structured log line, from this defer.
-	// Add fields here rather than logging ad hoc mid-handler, and never log
-	// the webhook secret or full request bodies.
-	statusCode := http.StatusOK
-	action := ""
-	flowID := ""
-	sessionKey := ""
-	upstreamStatus := 0
-	errMsg := ""
-	defer func() {
-		log.Printf(
-			"request_id=%s action=%s flow_id=%s session_key=%s upstream_status=%d duration_ms=%d error=%q",
-			requestID,
-			action,
-			flowID,
-			sessionKey,
-			upstreamStatus,
-			time.Since(start).Milliseconds(),
-			errMsg,
-		)
-	}()
-
-	if r.Method != http.MethodPost {
-		statusCode = http.StatusMethodNotAllowed
-		errMsg = "method not allowed"
-		writeJSON(w, statusCode, map[string]any{
-			"ok":    false,
-			"error": errMsg,
-		})
-		return
-	}
-
-	// Authenticate before anything else, so an unauthenticated caller learns
-	// nothing about how the bridge is configured.
-	if !authorizeRequest(r, cfg.bridgeAPIKey) {
-		statusCode = http.StatusUnauthorized
-		errMsg = "unauthorized"
-		w.Header().Set("www-authenticate", `Bearer realm="openclaw-bridge"`)
-		writeJSON(w, statusCode, map[string]any{
-			"ok":    false,
-			"error": errMsg,
-		})
-		return
-	}
-
-	if cfg.openclawWebhookURL == "" {
-		statusCode = http.StatusInternalServerError
-		errMsg = "OPENCLAW_WEBHOOK_URL is not set"
-		writeJSON(w, statusCode, map[string]any{
-			"ok":    false,
-			"error": errMsg,
-		})
-		return
-	}
-
-	// Cap the body, and decode numbers as json.Number so large IDs survive
-	// the round trip without float64 precision loss.
-	r.Body = http.MaxBytesReader(w, r.Body, cfg.maxBodyBytes)
-	defer r.Body.Close()
-
-	var raw map[string]any
-	dec := json.NewDecoder(r.Body)
-	dec.UseNumber()
-	if err := dec.Decode(&raw); err != nil {
-		if isRequestBodyTooLarge(err) {
-			statusCode = http.StatusRequestEntityTooLarge
-			errMsg = "request body too large"
-		} else {
-			statusCode = http.StatusBadRequest
-			errMsg = "request body must be JSON object"
-		}
-		writeJSON(w, statusCode, map[string]any{
-			"ok":    false,
-			"error": errMsg,
-		})
-		return
-	}
-
-	if err := ensureEOF(dec); err != nil {
-		statusCode = http.StatusBadRequest
-		errMsg = "request body must be a single JSON object"
-		writeJSON(w, statusCode, map[string]any{
-			"ok":    false,
-			"error": errMsg,
-		})
-		return
-	}
-
-	normalized := normalizeInboundPayload(raw, cfg.sessionKey)
-	action = normalized.Action
-	flowID = normalized.FlowID
-	sessionKey = normalized.SessionKey
-
-	validation := validateInboundPayload(normalized)
-	if !validation.OK {
-		statusCode = http.StatusBadRequest
-		errMsg = "invalid request"
-		writeJSON(w, statusCode, map[string]any{
-			"ok":      false,
-			"error":   errMsg,
-			"details": validation.Errors,
-		})
-		return
-	}
-
-	upstream := forwardToOpenClaw(r.Context(), cfg, requestID, buildOpenClawPayload(normalized))
-	upstreamStatus = upstream.Status
-	if !upstream.OK {
-		statusCode = upstream.Status
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		if upstream.Error == "" {
-			errMsg = "openclaw request failed"
-		} else {
-			errMsg = upstream.Error
-		}
-		writeJSON(w, statusCode, map[string]any{
-			"ok":             false,
-			"error":          errMsg,
-			"upstreamStatus": upstream.Status,
-			"upstreamBody":   upstream.Body,
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":             true,
-		"bridge":         cfg.serviceName,
-		"upstreamStatus": upstream.Status,
-		"upstreamBody":   upstream.Body,
-	})
-}
-
-// ---------------------------------------------------------------------------
 // Inbound authentication
 //
 // The OpenAPI schema declares an apiKey scheme carrying the secret in an
 // `api_key` header, which is what the Custom GPT sends:
 //
-//	Authentication = "API Key", Custom header name "api_key" -> api_key: <key>
+//	Authentication = "API Key", Auth Type "Custom", header name "api_key"
 //
 // Authorization: Bearer <key> is also accepted, purely so the endpoint is easy
 // to call from curl.
@@ -429,82 +304,225 @@ func secretsEqual(got, want string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Payload contract
-//
-// This mirrors the OpenClaw `webhooks` plugin, whose per-action schemas are
-// strict(): an unrecognized key fails the whole request with 400
-// "Unrecognized keys". So buildOpenClawPayload must emit exactly the keys the
-// target action accepts and nothing else. The accepted sets are, per action:
-//
-//	create_flow  goal(req) controllerId status notifyPolicy currentStep
-//	             stateJson waitJson
-//	run_task     flowId(req) runtime(req) task(req) childSessionKey label
-//	             sourceId parentTaskId agentId runId preferMetadata
-//	             notifyPolicy status startedAt lastEventAt progressSummary
-//	get_flow     flowId(req)
-//	resume_flow  flowId(req) expectedRevision(req) status currentStep stateJson
-//	finish_flow  flowId(req) expectedRevision(req) stateJson
-//
-// Two inbound fields are deliberately NOT forwarded, because no action accepts
-// them: `metadata` (surfaced as `stateJson` where that is accepted) and
-// `sessionKey` (the webhook route is bound to a session by OpenClaw config, so
-// the caller cannot choose one; it is kept for log context only).
-//
-// Changing anything here means changing three things in the same commit: the
-// checks below, openapi/openclaw-bridge.openapi.yaml, and the error strings
-// that enumerate valid values. Those strings are hand-written literals, not
-// generated from these maps, and tests assert on them.
+// Request handling
 // ---------------------------------------------------------------------------
 
+// handleOpenClaw is the only functional route.
+func handleOpenClaw(w http.ResponseWriter, r *http.Request, cfg config, jobs *jobStore) {
+	start := time.Now()
+
+	// Propagate the caller's trace ID, or mint one if absent.
+	requestID := strings.TrimSpace(r.Header.Get("x-request-id"))
+	if requestID == "" {
+		requestID = newID()
+	}
+
+	// Every request emits exactly one structured log line, from this defer.
+	// Add fields here rather than logging ad hoc mid-handler, and never log
+	// the gateway token, the api key, or message bodies.
+	statusCode := http.StatusOK
+	action := ""
+	sessionKey := ""
+	jobID := ""
+	errMsg := ""
+	defer func() {
+		log.Printf(
+			"request_id=%s action=%s session_key=%s job_id=%s status=%d duration_ms=%d error=%q",
+			requestID, action, sessionKey, jobID, statusCode,
+			time.Since(start).Milliseconds(), errMsg,
+		)
+	}()
+
+	if r.Method != http.MethodPost {
+		statusCode = http.StatusMethodNotAllowed
+		errMsg = "method not allowed"
+		writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
+
+	// Authenticate before anything else, so an unauthenticated caller learns
+	// nothing about how the bridge is configured.
+	if !authorizeRequest(r, cfg.bridgeAPIKey) {
+		statusCode = http.StatusUnauthorized
+		errMsg = "unauthorized"
+		w.Header().Set("www-authenticate", `Bearer realm="openclaw-bridge"`)
+		writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
+
+	if cfg.gatewayURL == "" {
+		statusCode = http.StatusInternalServerError
+		errMsg = "OPENCLAW_GATEWAY_URL is not set"
+		writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
+
+	// Cap the body, and decode numbers as json.Number so large ids survive
+	// the round trip without float64 precision loss.
+	r.Body = http.MaxBytesReader(w, r.Body, cfg.maxBodyBytes)
+	defer r.Body.Close()
+
+	var raw map[string]any
+	dec := json.NewDecoder(r.Body)
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err != nil {
+		if isRequestBodyTooLarge(err) {
+			statusCode = http.StatusRequestEntityTooLarge
+			errMsg = "request body too large"
+		} else {
+			statusCode = http.StatusBadRequest
+			errMsg = "request body must be JSON object"
+		}
+		writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
+
+	if err := ensureEOF(dec); err != nil {
+		statusCode = http.StatusBadRequest
+		errMsg = "request body must be a single JSON object"
+		writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+		return
+	}
+
+	payload := normalizeInboundPayload(raw, cfg.sessionKey)
+	action = payload.Action
+	sessionKey = payload.SessionKey
+	jobID = payload.JobID
+
+	if result := validateInboundPayload(payload); !result.OK {
+		statusCode = http.StatusBadRequest
+		errMsg = "invalid request"
+		writeJSON(w, statusCode, map[string]any{
+			"ok": false, "error": errMsg, "details": result.Errors,
+		})
+		return
+	}
+
+	switch payload.Action {
+	case actionAsk:
+		ctx, cancel := context.WithTimeout(r.Context(), cfg.requestTimeout)
+		defer cancel()
+
+		reply, err := askGateway(ctx, cfg, payload)
+		if err != nil {
+			statusCode = statusForGatewayError(err)
+			errMsg = err.Error()
+			writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"bridge":     cfg.serviceName,
+			"reply":      reply,
+			"sessionKey": payload.SessionKey,
+		})
+
+	case actionAskAsync:
+		created := jobs.start(payload.SessionKey)
+		jobID = created.ID
+		statusCode = http.StatusAccepted
+
+		// Deliberately detached from the request context: the caller gets an
+		// id immediately and the turn keeps running after they disconnect.
+		go func(p normalizedPayload, id string) {
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.asyncTimeout)
+			defer cancel()
+
+			reply, err := askGateway(ctx, cfg, p)
+			if err != nil {
+				jobs.fail(id, err.Error())
+				log.Printf("request_id=%s job_id=%s session_key=%s status=failed error=%q",
+					requestID, id, p.SessionKey, err.Error())
+				return
+			}
+			jobs.finish(id, reply)
+			log.Printf("request_id=%s job_id=%s session_key=%s status=done reply_bytes=%d",
+				requestID, id, p.SessionKey, len(reply))
+		}(payload, created.ID)
+
+		writeJSON(w, statusCode, map[string]any{
+			"ok":         true,
+			"bridge":     cfg.serviceName,
+			"jobId":      created.ID,
+			"status":     jobStatusRunning,
+			"sessionKey": payload.SessionKey,
+			"hint":       "poll get_result with this jobId until status is done or failed",
+		})
+
+	case actionGetResult:
+		found, ok := jobs.get(payload.JobID)
+		if !ok {
+			statusCode = http.StatusNotFound
+			errMsg = "unknown jobId; it may have expired, or the bridge restarted"
+			writeJSON(w, statusCode, map[string]any{"ok": false, "error": errMsg})
+			return
+		}
+
+		body := map[string]any{
+			"ok":         true,
+			"bridge":     cfg.serviceName,
+			"jobId":      found.ID,
+			"status":     found.Status,
+			"startedAt":  found.CreatedAt.UTC().Format(time.RFC3339),
+			"elapsedMs":  found.elapsed().Milliseconds(),
+			"sessionKey": found.SessionKey,
+		}
+		switch found.Status {
+		case jobStatusDone:
+			body["reply"] = found.Reply
+		case jobStatusFailed:
+			// Surface the failure rather than reporting a bare status, so the
+			// caller can tell a timeout from a bad credential without digging
+			// through bridge logs it cannot see.
+			body["ok"] = false
+			body["error"] = found.Err
+			body["failedAt"] = found.EndedAt.UTC().Format(time.RFC3339)
+			body["hint"] = "this turn will not complete; read error and retry only if it is transient"
+			errMsg = found.Err
+		default:
+			body["hint"] = "still running; poll again in a few seconds"
+		}
+		writeJSON(w, http.StatusOK, body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Payload contract
+//
+// Three actions, all thin wrappers over one OpenClaw chat completions call:
+//
+//	ask         run a turn and return the reply. Bounded by REQUEST_TIMEOUT_MS
+//	ask_async   start a turn, return a jobId immediately
+//	get_result  read an async turn's reply by jobId
+//
+// Changing anything here means changing three places in the same commit: the
+// checks below, openapi/openclaw-bridge.openapi.yaml, and the error strings
+// that enumerate valid values. Tests assert on those strings.
+// ---------------------------------------------------------------------------
+
+const (
+	actionAsk       = "ask"
+	actionAskAsync  = "ask_async"
+	actionGetResult = "get_result"
+)
+
 var allowedActions = map[string]struct{}{
-	"create_flow": {},
-	"run_task":    {},
-	"get_flow":    {},
-	"resume_flow": {},
-	"finish_flow": {},
+	actionAsk:       {},
+	actionAskAsync:  {},
+	actionGetResult: {},
 }
 
-var allowedNotifyPolicies = map[string]struct{}{
-	"done_only":     {},
-	"state_changes": {},
-	"silent":        {},
-}
+// Reserved by the gateway; it rejects these with a 400, so catch them here
+// where the error can name the actual problem.
+var reservedSessionPrefixes = []string{"subagent:", "cron:", "acp:"}
 
-// Upstream accepts a wider status set when creating a flow than when moving
-// one, so the two are validated separately.
-var allowedFlowStatuses = map[string]struct{}{
-	"queued":  {},
-	"running": {},
-	"waiting": {},
-	"blocked": {},
-}
-
-var allowedTaskStatuses = map[string]struct{}{
-	"queued":  {},
-	"running": {},
-}
-
-var allowedRuntimes = map[string]struct{}{
-	"subagent": {},
-	"acp":      {},
-}
-
-// normalizedPayload is the inbound GPT Action body after type coercion and
-// defaulting.
+// normalizedPayload is the inbound GPT Action body after coercion and defaults.
 type normalizedPayload struct {
-	Action       string
-	FlowID       string
-	SessionKey   string
-	Goal         string
-	Task         string
-	Status       string
-	NotifyPolicy string
-	Runtime      string
-	ChildSession string
-	Metadata     map[string]any
-
-	// nil means the caller omitted it, which is distinct from zero.
-	ExpectedRevision *int64
+	Action     string
+	Message    string
+	SessionKey string
+	User       string
+	JobID      string
 }
 
 type validationResult struct {
@@ -512,238 +530,275 @@ type validationResult struct {
 	Errors []string `json:"errors,omitempty"`
 }
 
-// normalizeInboundPayload coerces the decoded body into normalizedPayload and
-// applies defaults: sessionKey falls back to OPENCLAW_SESSION_KEY, and
-// notifyPolicy falls back to "done_only".
+// normalizeInboundPayload coerces the decoded body and applies defaults:
+// sessionKey falls back to OPENCLAW_SESSION_KEY.
 func normalizeInboundPayload(raw map[string]any, defaultSessionKey string) normalizedPayload {
 	payload := normalizedPayload{
-		Action:           getString(raw, "action"),
-		FlowID:           getString(raw, "flowId"),
-		SessionKey:       getString(raw, "sessionKey"),
-		Goal:             getString(raw, "goal"),
-		Task:             getString(raw, "task"),
-		Status:           getString(raw, "status"),
-		NotifyPolicy:     getString(raw, "notifyPolicy"),
-		Runtime:          getString(raw, "runtime"),
-		ChildSession:     getString(raw, "childSessionKey"),
-		Metadata:         getMap(raw, "metadata"),
-		ExpectedRevision: getInt64(raw, "expectedRevision"),
+		Action:     getString(raw, "action"),
+		Message:    getString(raw, "message"),
+		SessionKey: getString(raw, "sessionKey"),
+		User:       getString(raw, "user"),
+		JobID:      getString(raw, "jobId"),
 	}
-
 	if payload.SessionKey == "" {
 		payload.SessionKey = defaultSessionKey
 	}
-	if payload.NotifyPolicy == "" {
-		payload.NotifyPolicy = "done_only"
-	}
-
 	return payload
 }
 
-// validateInboundPayload collects every problem with the request rather than
-// failing on the first, so the caller gets one complete list of errors.
+// validateInboundPayload collects every problem rather than failing on the
+// first, so the caller gets one complete list.
 func validateInboundPayload(payload normalizedPayload) validationResult {
 	var errs []string
 
 	if payload.Action == "" {
 		errs = append(errs, "action is required")
 	} else if _, ok := allowedActions[payload.Action]; !ok {
-		errs = append(errs, "action must be one of: create_flow, run_task, get_flow, resume_flow, finish_flow")
-	}
-
-	// Per-action required fields, matching the upstream strict schemas.
-	switch payload.Action {
-	case "create_flow":
-		if payload.Goal == "" {
-			errs = append(errs, "goal is required for create_flow")
-		}
-		if payload.Status != "" {
-			if _, ok := allowedFlowStatuses[payload.Status]; !ok {
-				errs = append(errs, "status must be one of: queued, running, waiting, blocked")
-			}
-		}
-	case "run_task":
-		if payload.FlowID == "" {
-			errs = append(errs, "flowId is required for run_task")
-		}
-		if payload.Task == "" {
-			errs = append(errs, "task is required for run_task")
-		}
-		if payload.Runtime == "" {
-			errs = append(errs, "runtime is required for run_task")
-		} else if _, ok := allowedRuntimes[payload.Runtime]; !ok {
-			errs = append(errs, "runtime must be one of: subagent, acp")
-		}
-		if payload.Status != "" {
-			if _, ok := allowedTaskStatuses[payload.Status]; !ok {
-				errs = append(errs, "status must be one of: queued, running")
-			}
-		}
-	case "get_flow":
-		if payload.FlowID == "" {
-			errs = append(errs, "flowId is required for get_flow")
-		}
-	case "resume_flow", "finish_flow":
-		if payload.FlowID == "" {
-			errs = append(errs, "flowId is required for "+payload.Action)
-		}
-		if payload.ExpectedRevision == nil {
-			errs = append(errs, "expectedRevision is required for "+payload.Action+"; read it from get_flow")
-		} else if *payload.ExpectedRevision < 0 {
-			errs = append(errs, "expectedRevision must not be negative")
-		}
-		if payload.Action == "resume_flow" && payload.Status != "" {
-			if _, ok := allowedTaskStatuses[payload.Status]; !ok {
-				errs = append(errs, "status must be one of: queued, running")
-			}
-		}
-	}
-
-	if payload.NotifyPolicy != "" {
-		if _, ok := allowedNotifyPolicies[payload.NotifyPolicy]; !ok {
-			errs = append(errs, "notifyPolicy must be one of: done_only, state_changes, silent")
-		}
-	}
-
-	return validationResult{
-		OK:     len(errs) == 0,
-		Errors: errs,
-	}
-}
-
-// buildOpenClawPayload emits only the keys the target action accepts. Adding a
-// key here that the action does not declare fails the request upstream.
-func buildOpenClawPayload(payload normalizedPayload) map[string]any {
-	outbound := map[string]any{"action": payload.Action}
-
-	// The caller's metadata has no home upstream, but three actions take a free
-	// -form stateJson, so it rides along there rather than being dropped.
-	stateJSON := func() {
-		if len(payload.Metadata) > 0 {
-			outbound["stateJson"] = payload.Metadata
-		}
+		errs = append(errs, "action must be one of: ask, ask_async, get_result")
 	}
 
 	switch payload.Action {
-	case "create_flow":
-		outbound["goal"] = payload.Goal
-		outbound["notifyPolicy"] = payload.NotifyPolicy
-		if payload.Status != "" {
-			outbound["status"] = payload.Status
+	case actionAsk, actionAskAsync:
+		if payload.Message == "" {
+			errs = append(errs, "message is required for "+payload.Action)
 		}
-		stateJSON()
-
-	case "run_task":
-		outbound["flowId"] = payload.FlowID
-		outbound["task"] = payload.Task
-		outbound["runtime"] = payload.Runtime
-		outbound["notifyPolicy"] = payload.NotifyPolicy
-		if payload.ChildSession != "" {
-			outbound["childSessionKey"] = payload.ChildSession
+	case actionGetResult:
+		if payload.JobID == "" {
+			errs = append(errs, "jobId is required for get_result")
 		}
-		if payload.Status != "" {
-			outbound["status"] = payload.Status
-		}
-
-	case "get_flow":
-		outbound["flowId"] = payload.FlowID
-
-	case "resume_flow":
-		outbound["flowId"] = payload.FlowID
-		outbound["expectedRevision"] = *payload.ExpectedRevision
-		if payload.Status != "" {
-			outbound["status"] = payload.Status
-		}
-		stateJSON()
-
-	case "finish_flow":
-		outbound["flowId"] = payload.FlowID
-		outbound["expectedRevision"] = *payload.ExpectedRevision
-		stateJSON()
 	}
 
-	return outbound
+	for _, reserved := range reservedSessionPrefixes {
+		if strings.Contains(payload.SessionKey, reserved) {
+			errs = append(errs, "sessionKey must not use a reserved namespace: subagent:, cron:, acp:")
+			break
+		}
+	}
+
+	return validationResult{OK: len(errs) == 0, Errors: errs}
 }
 
 // ---------------------------------------------------------------------------
-// Upstream forwarding
+// Async job store
+//
+// In memory on purpose: the bridge has no database and this is the smallest
+// thing that works. The consequences are real, so they are documented rather
+// than hidden — a restart drops every job, and a second replica cannot see
+// the first replica's jobs. Run one replica.
 // ---------------------------------------------------------------------------
 
-// upstreamResult is the outcome of the OpenClaw hop. Status carries the
-// upstream HTTP status when there was one, or the status the bridge should
-// return when the hop itself failed.
-type upstreamResult struct {
-	OK     bool   `json:"ok"`
-	Status int    `json:"status"`
-	Body   any    `json:"body,omitempty"`
-	Error  string `json:"error,omitempty"`
+const (
+	jobStatusRunning = "running"
+	jobStatusDone    = "done"
+	jobStatusFailed  = "failed"
+)
+
+type job struct {
+	ID         string
+	Status     string
+	Reply      string
+	Err        string
+	SessionKey string
+	CreatedAt  time.Time
+	EndedAt    time.Time
 }
 
-func forwardToOpenClaw(ctx context.Context, cfg config, requestID string, payload map[string]any) upstreamResult {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return upstreamResult{OK: false, Status: http.StatusBadRequest, Error: err.Error()}
+// elapsed is how long the turn ran, or has been running so far.
+func (j job) elapsed() time.Duration {
+	if j.EndedAt.IsZero() {
+		return time.Since(j.CreatedAt)
+	}
+	return j.EndedAt.Sub(j.CreatedAt)
+}
+
+type jobStore struct {
+	mu   sync.Mutex
+	jobs map[string]*job
+	ttl  time.Duration
+}
+
+func newJobStore(ttl time.Duration) *jobStore {
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	return &jobStore{jobs: map[string]*job{}, ttl: ttl}
+}
+
+func (s *jobStore) start(sessionKey string) job {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	j := &job{ID: newID(), Status: jobStatusRunning, SessionKey: sessionKey, CreatedAt: time.Now()}
+	s.jobs[j.ID] = j
+	return *j
+}
+
+func (s *jobStore) finish(id, reply string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if j, ok := s.jobs[id]; ok {
+		j.Status = jobStatusDone
+		j.Reply = reply
+		j.EndedAt = time.Now()
+	}
+}
+
+func (s *jobStore) fail(id, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if j, ok := s.jobs[id]; ok {
+		j.Status = jobStatusFailed
+		j.Err = msg
+		j.EndedAt = time.Now()
+	}
+}
+
+func (s *jobStore) get(id string) (job, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	j, ok := s.jobs[id]
+	if !ok {
+		return job{}, false
+	}
+	return *j, true
+}
+
+// sweep drops finished jobs past their TTL. Running jobs are kept regardless,
+// so a slow turn is never collected out from under a poller.
+func (s *jobStore) sweep(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	removed := 0
+	for id, j := range s.jobs {
+		if j.Status == jobStatusRunning {
+			continue
+		}
+		if now.Sub(j.EndedAt) > s.ttl {
+			delete(s.jobs, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+func (s *jobStore) startJanitor(every time.Duration) func() {
+	if every <= 0 {
+		every = 15 * time.Minute
+	}
+	ticker := time.NewTicker(every)
+	done := make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				s.sweep(time.Now())
+			case <-done:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	return func() { close(done) }
+}
+
+// ---------------------------------------------------------------------------
+// OpenClaw gateway hop
+// ---------------------------------------------------------------------------
+
+var (
+	errGatewayUnauthorized = errors.New("OpenClaw rejected the bridge's gateway token")
+	errGatewayTimeout      = errors.New("OpenClaw did not reply in time")
+	errGatewayEmptyReply   = errors.New("OpenClaw returned no reply text")
+)
+
+// askGateway runs one agent turn and returns what the agent said.
+func askGateway(ctx context.Context, cfg config, payload normalizedPayload) (string, error) {
+	body := map[string]any{
+		"model": cfg.agentTarget,
+		"messages": []map[string]string{
+			{"role": "user", "content": payload.Message},
+		},
+	}
+	// The OpenAI `user` field gives the gateway a stable session per
+	// conversation, so a multi-turn GPT chat keeps one OpenClaw session.
+	if payload.User != "" {
+		body["user"] = payload.User
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, cfg.requestTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.openclawWebhookURL, bytes.NewReader(body))
+	encoded, err := json.Marshal(body)
 	if err != nil {
-		return upstreamResult{OK: false, Status: http.StatusBadRequest, Error: err.Error()}
+		return "", err
 	}
 
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.gatewayURL+"/v1/chat/completions", bytes.NewReader(encoded))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("content-type", "application/json")
-	if requestID != "" {
-		req.Header.Set("X-Request-ID", requestID)
-	}
-	// Sent both ways because OpenClaw webhook routes accept either form.
-	if cfg.openclawSecret != "" {
-		req.Header.Set("authorization", "Bearer "+cfg.openclawSecret)
-		req.Header.Set("x-openclaw-webhook-secret", cfg.openclawSecret)
+	req.Header.Set("authorization", "Bearer "+cfg.gatewayToken)
+	if payload.SessionKey != "" {
+		req.Header.Set("x-openclaw-session-key", payload.SessionKey)
 	}
 
-	client := cfg.httpClient
-	if client == nil {
-		client = &http.Client{Timeout: cfg.requestTimeout}
-	}
-
-	resp, err := client.Do(req)
+	resp, err := cfg.httpClient.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
-			return upstreamResult{OK: false, Status: http.StatusGatewayTimeout, Error: "OpenClaw request timed out"}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", errGatewayTimeout
 		}
-		return upstreamResult{OK: false, Status: http.StatusBadGateway, Error: err.Error()}
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return upstreamResult{OK: false, Status: http.StatusBadGateway, Error: err.Error()}
+		return "", err
 	}
 
-	// Pass JSON through structured; anything else becomes a string, so a
-	// stray HTML error page from a proxy still reaches the caller intact.
-	var parsed any
-	if strings.Contains(resp.Header.Get("content-type"), "application/json") {
-		if err := json.Unmarshal(raw, &parsed); err != nil {
-			parsed = string(raw)
-		}
-	} else {
-		parsed = string(raw)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return "", errGatewayUnauthorized
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", errors.New("OpenClaw returned " + strconv.Itoa(resp.StatusCode) + ": " + firstLine(string(rawBody)))
 	}
 
-	ok := resp.StatusCode >= 200 && resp.StatusCode < 300
-	result := upstreamResult{
-		OK:     ok,
-		Status: resp.StatusCode,
-		Body:   parsed,
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
-	if !ok {
-		result.Error = "OpenClaw returned non-2xx status"
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		return "", errors.New("OpenClaw returned a response the bridge could not parse")
+	}
+	if len(parsed.Choices) == 0 {
+		return "", errGatewayEmptyReply
 	}
 
-	return result
+	reply := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if reply == "" {
+		return "", errGatewayEmptyReply
+	}
+	return reply, nil
+}
+
+func statusForGatewayError(err error) int {
+	switch {
+	case errors.Is(err, errGatewayUnauthorized):
+		// The caller authenticated fine; it is the bridge's own credential
+		// that is wrong, which is a server-side misconfiguration.
+		return http.StatusInternalServerError
+	case errors.Is(err, errGatewayTimeout):
+		return http.StatusGatewayTimeout
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -758,8 +813,8 @@ func writeJSON(w http.ResponseWriter, statusCode int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// getString reads a string field, tolerating numbers so a numeric flowId is
-// not silently dropped. Any other type yields "".
+// getString reads a string field, tolerating numbers so a numeric id is not
+// silently dropped. Any other type yields "".
 func getString(raw map[string]any, key string) string {
 	v, ok := raw[key]
 	if !ok || v == nil {
@@ -773,44 +828,6 @@ func getString(raw map[string]any, key string) string {
 	default:
 		return ""
 	}
-}
-
-// getInt64 reads an integer field. It returns nil when the key is absent or
-// not a whole number, so callers can tell "omitted" apart from zero — which
-// matters for expectedRevision, where 0 is a legitimate revision.
-func getInt64(raw map[string]any, key string) *int64 {
-	v, ok := raw[key]
-	if !ok || v == nil {
-		return nil
-	}
-	var s string
-	switch t := v.(type) {
-	case json.Number:
-		s = t.String()
-	case string:
-		s = strings.TrimSpace(t)
-	default:
-		return nil
-	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return nil
-	}
-	return &n
-}
-
-// getMap reads an object field, returning an empty map rather than nil so
-// callers never have to nil-check.
-func getMap(raw map[string]any, key string) map[string]any {
-	v, ok := raw[key]
-	if !ok || v == nil {
-		return map[string]any{}
-	}
-	obj, ok := v.(map[string]any)
-	if !ok {
-		return map[string]any{}
-	}
-	return obj
 }
 
 // ensureEOF rejects trailing data after the first JSON value, so a body like
@@ -832,4 +849,27 @@ func isRequestBodyTooLarge(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "http: request body too large")
+}
+
+// newID returns a random hex id. Falls back to a timestamp if the system
+// entropy source fails, so an id is always produced.
+func newID() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return hex.EncodeToString(buf)
+}
+
+// firstLine keeps upstream error text to one short line, so a stray HTML page
+// cannot flood the response or the log.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }

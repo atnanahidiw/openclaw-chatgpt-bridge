@@ -573,3 +573,53 @@ a:hover { color: #53389e; }
 }
 
 .tested-tag::before { content: "✓"; font-size: .7rem; }
+
+/* Security callout — red, deliberately hard to skim past. */
+.danger {
+  display: flex;
+  gap: .9rem;
+  align-items: flex-start;
+  margin: 1.8rem 0;
+  padding: 1.1rem 1.25rem;
+  color: #7f1d1d;
+  border: 1px solid #fca5a5;
+  border-left: 4px solid #b91c1c;
+  border-radius: 0 .6rem .6rem 0;
+  background: #fef2f2;
+}
+
+.danger::before {
+  flex: none;
+  content: "!";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  color: #fff;
+  border-radius: 50%;
+  background: #b91c1c;
+  font-size: .95rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 0 4px rgba(185, 28, 28, .14);
+}
+
+.danger > div { min-width: 0; }
+.danger p { margin: 0 0 .55rem; }
+.danger p:last-child { margin-bottom: 0; }
+.danger strong { color: #991b1b; }
+.danger a { color: #991b1b; text-decoration: underline; }
+.danger code {
+  padding: .1rem .3rem;
+  border-radius: .3rem;
+  background: rgba(185, 28, 28, .1);
+}
+
+.danger-title {
+  display: block;
+  margin-bottom: .5rem;
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: -.01em;
+}

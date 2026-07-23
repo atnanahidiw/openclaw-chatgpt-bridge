@@ -4,16 +4,20 @@ Guidance for coding agents working in this repository.
 
 ## What this is
 
-A single-binary Go HTTP service that sits between a ChatGPT Custom GPT Action and an
-OpenClaw webhook. It validates the inbound Action payload, normalizes it, forwards it to
-`OPENCLAW_WEBHOOK_URL`, and returns the upstream status/body to the caller.
+A single-binary Go HTTP service between a ChatGPT Custom GPT Action and an OpenClaw
+Gateway. It authenticates the caller, forwards the instruction to OpenClaw's
+OpenAI-compatible endpoint, and returns what the agent said.
 
 ```text
-ChatGPT Action -> POST /v1/openclaw (this bridge) -> OpenClaw webhook
+ChatGPT Action -> POST /v1/openclaw (this bridge) -> OpenClaw /v1/chat/completions
 ```
 
-There is no database, no auth of its own, and no persistent state. Every request is
-stateless pass-through with validation.
+The upstream call runs a **real agent turn**: shell commands, file access, installed
+skills. It is not an LLM passthrough. That endpoint is full operator access on the OpenClaw
+side, which is why the gateway token stays in the bridge and callers authenticate with a
+separate `BRIDGE_API_KEY`.
+
+State: none, except an in-memory job store for async turns.
 
 ## Layout
 
@@ -29,21 +33,23 @@ rather than appending to the end, and keep the map in the package doc comment cu
 | Entry point | `main()`, server lifecycle, graceful shutdown |
 | Configuration | `config` struct, `loadConfig`, env helpers |
 | Routing | `newMux`, `/healthz`, `/readyz`, `/version` |
-| Request handling | `handleOpenClaw` — the `/v1/openclaw` flow |
-| Payload contract | Action whitelists, normalization, validation, outbound shaping |
-| Upstream forwarding | `forwardToOpenClaw` |
-| JSON helpers | `writeJSON`, `getString`, `getMap`, `ensureEOF` |
+| Inbound authentication | `authorizeRequest`, `presentedKey`, `secretsEqual` |
+| Request handling | `handleOpenClaw` — decode, validate, dispatch |
+| Payload contract | `allowedActions`, normalization, validation |
+| Async job store | `jobStore` and its janitor |
+| OpenClaw gateway hop | `askGateway`, error mapping |
+| JSON helpers | `writeJSON`, `getString`, `ensureEOF` |
 
 | Path | What lives there |
 | --- | --- |
 | [main.go](main.go) | The whole service |
 | [main_test.go](main_test.go) | All tests (unit + `httptest` handler tests) |
 | [openapi/openclaw-bridge.openapi.yaml](openapi/openclaw-bridge.openapi.yaml) | Schema imported into the Custom GPT Action |
-| [payloads/](payloads/) | Sample request bodies used by smoke tests |
+| [payloads/](payloads/) | Sample request bodies used by the smoke test |
 | [k8s/](k8s/) | Plain manifests |
 | [chart/](chart/) | Helm chart (same deployment, templated) |
 | [docs/](docs/) | Jekyll site published to GitHub Pages |
-| [scripts/test-webhook.sh](scripts/test-webhook.sh) | Local smoke test against a running bridge |
+| [scripts/smoke-test.sh](scripts/smoke-test.sh) | Local smoke test: a sync `ask`, then an `ask_async` round trip |
 
 ## Commands
 
@@ -51,7 +57,7 @@ rather than appending to the end, and keep the map in the package doc comment cu
 go test ./...          # tests
 go test -race ./...    # CI runs this too
 go vet ./...
-go run .               # needs .env values exported, or it 500s on /v1/openclaw
+go run .               # needs .env exported, or it 500s on /v1/openclaw
 ```
 
 Copy `.env.example` to `.env` first. `go run .` does not read `.env` itself — the Docker
@@ -61,87 +67,99 @@ Smoke test a running instance:
 
 ```bash
 curl http://localhost:8080/healthz
-./scripts/test-webhook.sh
+./scripts/smoke-test.sh
 ```
 
 ## Endpoints
 
-- `POST /v1/openclaw` — the only functional route
+- `POST /v1/openclaw` — the only functional route, and the only one requiring auth
 - `GET /healthz` — always OK
 - `GET /readyz` — additionally dials `TAILSCALE_PROXY_ADDR` when `TAILSCALE_ENABLED=true`
 - `GET /version` — build metadata injected via `-ldflags -X main.version=…`
 
+Health endpoints stay unauthenticated on purpose: container platforms probe them without
+credentials.
+
 ## Contract rules
 
-This mirrors the OpenClaw `webhooks` plugin. **Its per-action schemas are `strict()`** —
-any key the action does not declare fails the entire request with
-`400 Unrecognized keys`. So `buildOpenClawPayload` must emit exactly the accepted key set
-per action and nothing more. The authoritative schema lives in the installed package at
-`dist/extensions/webhooks/index.js`, with prose in `docs/plugins/webhooks.md`.
+Three actions, all thin wrappers over one chat-completions call:
 
-Actions are whitelisted in `allowedActions`; notify policies, statuses, and runtimes have
-their own maps beside it. Per-action rules live in `validateInboundPayload`:
+| Action | Required | Optional | Returns |
+| --- | --- | --- | --- |
+| `ask` | `message` | `sessionKey`, `user` | `reply`, synchronously |
+| `ask_async` | `message` | `sessionKey`, `user` | `jobId`, immediately (`202`) |
+| `get_result` | `jobId` | — | `status`, plus `reply` or `error` |
 
-| Action | Required | Also accepted |
-| --- | --- | --- |
-| `create_flow` | `goal` | `status` (queued/running/waiting/blocked), `notifyPolicy`, `stateJson` |
-| `run_task` | `flowId`, `task`, `runtime` (subagent/acp) | `childSessionKey`, `status` (queued/running), `notifyPolicy` |
-| `get_flow` | `flowId` | — nothing else |
-| `resume_flow` | `flowId`, `expectedRevision` | `status` (queued/running), `stateJson` |
-| `finish_flow` | `flowId`, `expectedRevision` | `stateJson` |
+`sessionKey` defaults to `OPENCLAW_SESSION_KEY` and is sent as `x-openclaw-session-key`.
+The reserved namespaces `subagent:`, `cron:`, `acp:` are rejected here rather than
+upstream, so the error names the real problem.
 
-Two inbound fields are deliberately **never forwarded**, because no action accepts them:
-
-- `sessionKey` — the webhook route is bound to a session by OpenClaw config, so a caller
-  cannot choose one. `OPENCLAW_SESSION_KEY` survives for log context only.
-- `metadata` — re-emitted as `stateJson` on the three actions that accept it, dropped for
-  `get_flow` and `run_task`.
-
-`expectedRevision` is optimistic concurrency: read it from a `get_flow` response first.
-`getInt64` returns a `*int64` so revision `0` is distinguishable from omitted.
+`user` maps to the OpenAI `user` field, which gives the gateway a stable session per
+conversation. Same value across a chat means OpenClaw keeps context.
 
 **Changing the contract means changing three places in the same commit:** the Go
 validation, the OpenAPI schema, and the error-message strings that enumerate valid values
 (they are hand-written literals, not generated from the maps). Tests assert on those
-strings, and `TestOutboundKeysMatchUpstreamSchema` pins the emitted key set per action.
+strings.
 
-Verify against a live OpenClaw rather than trusting the tests alone — the strict-schema
-failures only show up over the wire.
+Verify against a live OpenClaw rather than trusting the tests alone. Stub gateways cannot
+tell you that a turn takes 30 seconds, or that the endpoint is disabled by default.
 
 ## Conventions
 
 - Standard library only. `go.mod` has zero dependencies — keep it that way unless the user
   asks for a dependency explicitly.
-- All responses go through `writeJSON` and carry an `ok` boolean. Errors add `error`, and
-  validation failures add `details` (a string array). Upstream failures add
-  `upstreamStatus` and `upstreamBody`.
+- All responses go through `writeJSON` and carry an `ok` boolean. Errors add `error`,
+  validation failures add `details` (a string array), async failures add `failedAt` and a
+  `hint`.
+- **Failures must stay legible to a model.** The `hint` field exists so a GPT knows whether
+  to retry. Do not remove it, and do not replace plain-language errors with codes.
 - One structured log line per `/v1/openclaw` request, emitted from a `defer` in
-  `handleOpenClaw` in `key=value` form. Add fields there rather than logging ad hoc
-  mid-handler. Never log the webhook secret or full request bodies.
+  `handleOpenClaw` in `key=value` form. Async outcomes log a second line when the turn
+  ends. Never log the gateway token, the api key, or message bodies.
 - Config is read once at startup by `loadConfig` via the `envString`/`envInt` helpers,
   which fall back silently on unset or unparseable values. Do not read `os.Getenv` from
   handlers — pass `config` through.
+- Auth runs **before** any other check, so an unauthenticated caller learns nothing about
+  configuration. `TestAuthIsCheckedBeforeConfiguration` pins this.
+- Secrets are compared with `secretsEqual`, which hashes both sides and uses
+  `subtle.ConstantTimeCompare`. Do not replace it with `==`.
 - JSON decoding uses `dec.UseNumber()` and `ensureEOF` to reject trailing data; bodies are
   capped by `MAX_BODY_BYTES`. Preserve both when touching the decode path.
-- Inbound `X-Request-ID` is echoed upstream, generated when absent. Keep that propagation.
 
 ## Gotchas
 
+- **Async jobs live in memory.** A restart drops them, and a second replica cannot see the
+  first replica's jobs, so a poll can `404` a healthy job. **Run one replica** — on Azure
+  Container Apps that is `--max-replicas 1`. Adding horizontal scale requires moving the
+  job store somewhere shared first.
+- **The upstream endpoint is disabled by default.** `gateway.http.endpoints.chatCompletions`
+  must be enabled in `~/.openclaw/openclaw.json`, and the Gateway restarted.
+- **Judge that endpoint by content type, not status code.** OpenClaw's Control UI answers
+  `200 text/html` for paths that do not exist, so a `200` from `/v1/models` proves nothing
+  on its own. This has caused false "it works" conclusions more than once.
+- **Two credentials fail differently.** A bad caller key is `401` (their problem); a bad
+  gateway token is `500` (the operator's). Keep that mapping — a GPT should retry neither,
+  but the distinction tells a human where to look.
+- **Turns are slow.** Even a trivial question takes seconds; anything touching files takes
+  minutes. `ask` exists for convenience, but `ask_async` is the honest default. Do not
+  lower `REQUEST_TIMEOUT_MS` to "fix" a timeout — switch to async.
 - **The Dockerfile copies `*.go` from the root only.** If Go source ever moves into
   subdirectories, [Dockerfile](Dockerfile) needs a matching `COPY` or the image build
-  breaks while CI still passes — the two build paths are independent.
+  breaks while CI still passes — the two build paths are independent. It also
+  cross-compiles via `--platform=$BUILDPLATFORM` and `GOARCH=$TARGETARCH`, because
+  Container Apps requires `linux/amd64` and emulating the Go toolchain is far slower.
 - **CI validates a hard-coded list of YAML paths** in
-  [.github/workflows/ci.yml](.github/workflows/ci.yml). New chart values files or
-  workflows must be added to that list to be checked. That step loads YAML with a
-  strict loader that rejects duplicate mapping keys — plain `yaml.safe_load` keeps the
-  last one silently, which is how a duplicated `goal` property once sat in the OpenAPI
-  spec with CI green.
-- **`k8s/` and `chart/` describe the same deployment twice.** A change to env vars,
-  probes, or the Tailscale sidecar needs to land in both, plus
+  [.github/workflows/ci.yml](.github/workflows/ci.yml). New chart values files or workflows
+  must be added to that list. That step uses a strict loader that rejects duplicate mapping
+  keys — plain `yaml.safe_load` keeps the last one silently, which is how a duplicated
+  `goal` property once sat in the OpenAPI spec with CI green.
+- **`k8s/` and `chart/` describe the same deployment twice.** A change to env vars, probes,
+  or the Tailscale sidecar needs to land in both, plus
   [chart/values.schema.json](chart/values.schema.json) when adding a values key.
-- **`ADDR` vs `PORT`:** the server binds `ADDR` (default `:8080`); `PORT` is loaded into
-  config but not used for binding. Use `ADDR=:8080` for pod/tailnet reachability; only
-  bind `127.0.0.1` when a sidecar proxies to localhost.
+- **`ADDR` vs `PORT`:** the server binds `ADDR` (default `:8080`); `PORT` is not used for
+  binding at all. Use `ADDR=:8080` for pod/tailnet reachability; bind `127.0.0.1` only when
+  a sidecar proxies to localhost.
 - Docs under `docs/` deploy to GitHub Pages on push to `main`. README links to the
   published site, so renaming a docs page breaks those links.
 

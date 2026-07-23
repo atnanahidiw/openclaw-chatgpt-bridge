@@ -1,259 +1,387 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-func TestNormalizeCreateFlow(t *testing.T) {
-	normalized := normalizeInboundPayload(map[string]any{
-		"action": "create_flow",
-		"goal":   "Build UMKM finance app MVP",
-		"metadata": map[string]any{
-			"source": "chatgpt",
-		},
-	}, "agent:main:main")
-
-	if normalized.Action != "create_flow" {
-		t.Fatalf("expected action create_flow, got %q", normalized.Action)
-	}
-	if normalized.SessionKey != "agent:main:main" {
-		t.Fatalf("expected default session key, got %q", normalized.SessionKey)
-	}
-	if normalized.NotifyPolicy != "done_only" {
-		t.Fatalf("expected default notify policy, got %q", normalized.NotifyPolicy)
+// testConfig returns a config pointed at a stub gateway.
+func testConfig(gatewayURL string) config {
+	return config{
+		serviceName:    "openclaw-chatgpt-bridge",
+		gatewayURL:     strings.TrimRight(gatewayURL, "/"),
+		gatewayToken:   "gateway-token",
+		agentTarget:    "openclaw/default",
+		sessionKey:     "agent:main:chatgpt",
+		bridgeAPIKey:   "bridge-key",
+		requestTimeout: 5 * time.Second,
+		asyncTimeout:   5 * time.Second,
+		jobTTL:         time.Hour,
+		maxBodyBytes:   1024 * 1024,
+		httpClient:     &http.Client{},
 	}
 }
 
-func TestValidateRunTask(t *testing.T) {
-	normalized := normalizeInboundPayload(map[string]any{
-		"action":  "run_task",
-		"flowId":  "flow_123",
-		"task":    "Write database schema",
-		"runtime": "subagent",
-		"status":  "queued",
-	}, "")
-
-	result := validateInboundPayload(normalized)
-	if !result.OK {
-		t.Fatalf("expected payload valid, got errors: %#v", result.Errors)
-	}
-}
-
-func TestRunTaskRequiresRuntime(t *testing.T) {
-	base := map[string]any{
-		"action": "run_task",
-		"flowId": "flow_123",
-		"task":   "Write database schema",
-	}
-
-	if result := validateInboundPayload(normalizeInboundPayload(base, "")); result.OK {
-		t.Fatalf("expected run_task without runtime to be rejected")
-	}
-
-	base["runtime"] = "not-a-runtime"
-	if result := validateInboundPayload(normalizeInboundPayload(base, "")); result.OK {
-		t.Fatalf("expected unknown runtime to be rejected")
-	}
-}
-
-// resume_flow and finish_flow carry optimistic concurrency upstream, so the
-// revision is required and 0 must be distinguishable from "omitted".
-func TestResumeAndFinishRequireExpectedRevision(t *testing.T) {
-	for _, action := range []string{"resume_flow", "finish_flow"} {
-		t.Run(action, func(t *testing.T) {
-			without := normalizeInboundPayload(map[string]any{
-				"action": action,
-				"flowId": "flow_123",
-			}, "")
-			if validateInboundPayload(without).OK {
-				t.Fatalf("expected %s without expectedRevision to be rejected", action)
-			}
-
-			raw := map[string]any{"action": action, "flowId": "flow_123", "expectedRevision": json.Number("0")}
-			zero := normalizeInboundPayload(raw, "")
-			if zero.ExpectedRevision == nil || *zero.ExpectedRevision != 0 {
-				t.Fatalf("expected revision 0 to be preserved, got %v", zero.ExpectedRevision)
-			}
-			if result := validateInboundPayload(zero); !result.OK {
-				t.Fatalf("expected revision 0 to be valid, got %#v", result.Errors)
-			}
-			if got := buildOpenClawPayload(zero)["expectedRevision"]; got != int64(0) {
-				t.Fatalf("expected expectedRevision 0 in outbound body, got %#v", got)
-			}
+// stubGateway answers like OpenClaw's chat completions endpoint.
+func stubGateway(t *testing.T, reply string, seen func(*http.Request, map[string]any)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if seen != nil {
+			seen(r, body)
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"role": "assistant", "content": reply}, "finish_reason": "stop"},
+			},
 		})
-	}
+	}))
 }
 
-// The upstream schemas are strict(): any key the action does not declare fails
-// the whole request. This pins the exact key set the bridge emits.
-func TestOutboundKeysMatchUpstreamSchema(t *testing.T) {
-	accepted := map[string]map[string]bool{
-		"create_flow": {"action": true, "goal": true, "controllerId": true, "status": true, "notifyPolicy": true, "currentStep": true, "stateJson": true, "waitJson": true},
-		"run_task":    {"action": true, "flowId": true, "runtime": true, "task": true, "childSessionKey": true, "label": true, "sourceId": true, "parentTaskId": true, "agentId": true, "runId": true, "preferMetadata": true, "notifyPolicy": true, "status": true, "startedAt": true, "lastEventAt": true, "progressSummary": true},
-		"get_flow":    {"action": true, "flowId": true},
-		"resume_flow": {"action": true, "flowId": true, "expectedRevision": true, "status": true, "currentStep": true, "stateJson": true},
-		"finish_flow": {"action": true, "flowId": true, "expectedRevision": true, "stateJson": true},
+func post(t *testing.T, mux *http.ServeMux, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("api_key", "bridge-key")
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
-
-	// Deliberately over-supplies every inbound field, including the two the
-	// bridge must never forward.
-	inbound := map[string]any{
-		"flowId":           "flow_123",
-		"goal":             "Ship it",
-		"task":             "Do the thing",
-		"runtime":          "subagent",
-		"childSessionKey":  "agent:main:worker",
-		"sessionKey":       "agent:main:main",
-		"notifyPolicy":     "done_only",
-		"expectedRevision": json.Number("7"),
-		"metadata":         map[string]any{"source": "chatgpt-action"},
-	}
-
-	for action, allowed := range accepted {
-		t.Run(action, func(t *testing.T) {
-			raw := map[string]any{}
-			for k, v := range inbound {
-				raw[k] = v
-			}
-			raw["action"] = action
-			if action == "create_flow" || action == "run_task" {
-				raw["status"] = "queued"
-			}
-
-			normalized := normalizeInboundPayload(raw, "agent:main:main")
-			if result := validateInboundPayload(normalized); !result.OK {
-				t.Fatalf("fixture should be valid, got %#v", result.Errors)
-			}
-
-			for key := range buildOpenClawPayload(normalized) {
-				if !allowed[key] {
-					t.Errorf("%s: emits %q, which upstream rejects with 400 Unrecognized keys", action, key)
-				}
-			}
-		})
-	}
+	mux.ServeHTTP(rec, req)
+	return rec
 }
 
-// Neither is accepted by any upstream action.
-func TestSessionKeyAndMetadataAreNeverForwarded(t *testing.T) {
-	for _, action := range []string{"create_flow", "run_task", "get_flow", "resume_flow", "finish_flow"} {
-		t.Run(action, func(t *testing.T) {
-			normalized := normalizeInboundPayload(map[string]any{
-				"action":           action,
-				"flowId":           "flow_123",
-				"goal":             "Ship it",
-				"task":             "Do the thing",
-				"runtime":          "acp",
-				"expectedRevision": json.Number("3"),
-				"sessionKey":       "agent:main:main",
-				"metadata":         map[string]any{"source": "chatgpt-action"},
-			}, "agent:main:main")
-
-			outbound := buildOpenClawPayload(normalized)
-			if _, ok := outbound["sessionKey"]; ok {
-				t.Errorf("%s: sessionKey must not be forwarded", action)
-			}
-			if _, ok := outbound["metadata"]; ok {
-				t.Errorf("%s: metadata must not be forwarded", action)
-			}
-		})
+func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("response was not JSON: %v (%s)", err, rec.Body.String())
 	}
+	return out
 }
 
-// metadata has no upstream home, but three actions accept a free-form
-// stateJson, so it should survive there rather than being silently dropped.
-func TestMetadataBecomesStateJSON(t *testing.T) {
-	meta := map[string]any{"source": "chatgpt-action"}
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
 
-	for _, tc := range []struct {
-		action string
-		want   bool
+func TestValidateActions(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   map[string]any
+		valid bool
 	}{
-		{"create_flow", true},
-		{"resume_flow", true},
-		{"finish_flow", true},
-		{"get_flow", false},
-		{"run_task", false},
-	} {
-		t.Run(tc.action, func(t *testing.T) {
-			normalized := normalizeInboundPayload(map[string]any{
-				"action":           tc.action,
-				"flowId":           "flow_123",
-				"goal":             "Ship it",
-				"task":             "Do the thing",
-				"runtime":          "subagent",
-				"expectedRevision": json.Number("1"),
-				"metadata":         meta,
-			}, "")
+		{"ask needs a message", map[string]any{"action": "ask"}, false},
+		{"ask with message", map[string]any{"action": "ask", "message": "hi"}, true},
+		{"ask_async needs a message", map[string]any{"action": "ask_async"}, false},
+		{"ask_async with message", map[string]any{"action": "ask_async", "message": "hi"}, true},
+		{"get_result needs a jobId", map[string]any{"action": "get_result"}, false},
+		{"get_result with jobId", map[string]any{"action": "get_result", "jobId": "abc"}, true},
+		{"missing action", map[string]any{"message": "hi"}, false},
+		{"unknown action", map[string]any{"action": "run_task", "message": "hi"}, false},
+		{"old flow action is gone", map[string]any{"action": "create_flow", "goal": "x"}, false},
+	}
 
-			_, got := buildOpenClawPayload(normalized)["stateJson"]
-			if got != tc.want {
-				t.Fatalf("%s: stateJson present = %v, want %v", tc.action, got, tc.want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validateInboundPayload(normalizeInboundPayload(tc.raw, "")).OK
+			if got != tc.valid {
+				t.Fatalf("valid = %v, want %v", got, tc.valid)
 			}
 		})
 	}
 }
 
-func TestNotifyPolicyMatchesUpstreamEnum(t *testing.T) {
-	// "all_events" was never a real upstream value.
-	for _, policy := range []string{"all_events", "unsupported"} {
-		normalized := normalizeInboundPayload(map[string]any{
-			"action":       "create_flow",
-			"goal":         "Build app",
-			"notifyPolicy": policy,
-		}, "")
-		if validateInboundPayload(normalized).OK {
-			t.Fatalf("expected notifyPolicy %q to be rejected", policy)
+// The gateway rejects these namespaces with a 400, so the bridge should catch
+// them first and say why.
+func TestRejectsReservedSessionNamespaces(t *testing.T) {
+	for _, key := range []string{"subagent:worker", "agent:main:cron:nightly", "acp:thing"} {
+		t.Run(key, func(t *testing.T) {
+			result := validateInboundPayload(normalizeInboundPayload(map[string]any{
+				"action": "ask", "message": "hi", "sessionKey": key,
+			}, ""))
+			if result.OK {
+				t.Fatalf("expected %q to be rejected", key)
+			}
+		})
+	}
+
+	ok := validateInboundPayload(normalizeInboundPayload(map[string]any{
+		"action": "ask", "message": "hi", "sessionKey": "agent:main:chatgpt",
+	}, ""))
+	if !ok.OK {
+		t.Fatalf("a normal session key should be valid, got %#v", ok.Errors)
+	}
+}
+
+func TestSessionKeyDefaults(t *testing.T) {
+	p := normalizeInboundPayload(map[string]any{"action": "ask", "message": "hi"}, "agent:main:chatgpt")
+	if p.SessionKey != "agent:main:chatgpt" {
+		t.Fatalf("sessionKey = %q, want the configured default", p.SessionKey)
+	}
+
+	p = normalizeInboundPayload(map[string]any{
+		"action": "ask", "message": "hi", "sessionKey": "agent:main:other",
+	}, "agent:main:chatgpt")
+	if p.SessionKey != "agent:main:other" {
+		t.Fatalf("an explicit sessionKey should win, got %q", p.SessionKey)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ask
+// ---------------------------------------------------------------------------
+
+func TestAskReturnsTheReply(t *testing.T) {
+	var gotHeader, gotModel, gotContent, gotUser string
+	gw := stubGateway(t, "pong", func(r *http.Request, body map[string]any) {
+		gotHeader = r.Header.Get("x-openclaw-session-key")
+		gotModel, _ = body["model"].(string)
+		gotUser, _ = body["user"].(string)
+		if msgs, ok := body["messages"].([]any); ok && len(msgs) > 0 {
+			if m, ok := msgs[0].(map[string]any); ok {
+				gotContent, _ = m["content"].(string)
+			}
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer gateway-token" {
+			t.Errorf("gateway auth = %q, want the bridge's token", got)
+		}
+	})
+	defer gw.Close()
+
+	mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
+	rec := post(t, mux, `{"action":"ask","message":"ping","user":"conv:42"}`, nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	body := decode(t, rec)
+	if body["reply"] != "pong" {
+		t.Fatalf("reply = %v, want pong", body["reply"])
+	}
+	if gotHeader != "agent:main:chatgpt" {
+		t.Errorf("session header = %q, want the configured session", gotHeader)
+	}
+	if gotModel != "openclaw/default" {
+		t.Errorf("model = %q", gotModel)
+	}
+	if gotContent != "ping" {
+		t.Errorf("message content = %q", gotContent)
+	}
+	if gotUser != "conv:42" {
+		t.Errorf("user = %q, want it forwarded for session continuity", gotUser)
+	}
+}
+
+func TestAskMapsGatewayFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		wantBridge int
+	}{
+		{"gateway rejects our token", http.StatusUnauthorized, http.StatusInternalServerError},
+		{"gateway forbids", http.StatusForbidden, http.StatusInternalServerError},
+		{"gateway errors", http.StatusInternalServerError, http.StatusBadGateway},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte("nope"))
+			}))
+			defer gw.Close()
+
+			mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
+			rec := post(t, mux, `{"action":"ask","message":"hi"}`, nil)
+			if rec.Code != tc.wantBridge {
+				t.Fatalf("bridge status = %d, want %d", rec.Code, tc.wantBridge)
+			}
+			if decode(t, rec)["ok"] != false {
+				t.Errorf("expected ok=false")
+			}
+		})
+	}
+}
+
+// A 200 with no usable content is a failure, not an empty success.
+func TestAskRejectsEmptyReply(t *testing.T) {
+	for _, payload := range []string{`{"choices":[]}`, `{"choices":[{"message":{"content":"   "}}]}`} {
+		gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(payload))
+		}))
+
+		mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
+		rec := post(t, mux, `{"action":"ask","message":"hi"}`, nil)
+		gw.Close()
+
+		if rec.Code == http.StatusOK {
+			t.Fatalf("empty reply should not be a 200, got %s", rec.Body.String())
 		}
 	}
-
-	for _, policy := range []string{"done_only", "state_changes", "silent"} {
-		normalized := normalizeInboundPayload(map[string]any{
-			"action":       "create_flow",
-			"goal":         "Build app",
-			"notifyPolicy": policy,
-		}, "")
-		if result := validateInboundPayload(normalized); !result.OK {
-			t.Fatalf("expected notifyPolicy %q to be valid, got %#v", policy, result.Errors)
-		}
-	}
 }
 
-// notifyPolicy is only declared by create_flow and run_task upstream.
-func TestNotifyPolicyOnlySentWhereAccepted(t *testing.T) {
-	for _, tc := range []struct {
-		action string
-		want   bool
-	}{
-		{"create_flow", true},
-		{"run_task", true},
-		{"get_flow", false},
-		{"resume_flow", false},
-		{"finish_flow", false},
-	} {
-		t.Run(tc.action, func(t *testing.T) {
-			normalized := normalizeInboundPayload(map[string]any{
-				"action":           tc.action,
-				"flowId":           "flow_123",
-				"goal":             "Ship it",
-				"task":             "Do the thing",
-				"runtime":          "subagent",
-				"expectedRevision": json.Number("1"),
-			}, "")
+// ---------------------------------------------------------------------------
+// ask_async + get_result
+// ---------------------------------------------------------------------------
 
-			_, got := buildOpenClawPayload(normalized)["notifyPolicy"]
-			if got != tc.want {
-				t.Fatalf("%s: notifyPolicy present = %v, want %v", tc.action, got, tc.want)
-			}
+func TestAsyncRoundTrip(t *testing.T) {
+	release := make(chan struct{})
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // hold the turn open so we can observe "running"
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": "done thinking"}}},
 		})
+	}))
+	defer gw.Close()
+
+	jobs := newJobStore(time.Hour)
+	mux := newMux(testConfig(gw.URL), jobs)
+
+	rec := post(t, mux, `{"action":"ask_async","message":"long job"}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rec.Code)
+	}
+	body := decode(t, rec)
+	id, _ := body["jobId"].(string)
+	if id == "" {
+		t.Fatal("expected a jobId")
+	}
+	if body["status"] != jobStatusRunning {
+		t.Fatalf("status = %v, want running", body["status"])
+	}
+
+	// While the gateway is still held, the job must report running.
+	rec = post(t, mux, `{"action":"get_result","jobId":"`+id+`"}`, nil)
+	if got := decode(t, rec)["status"]; got != jobStatusRunning {
+		t.Fatalf("status = %v, want running", got)
+	}
+
+	close(release)
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final map[string]any
+	for time.Now().Before(deadline) {
+		final = decode(t, post(t, mux, `{"action":"get_result","jobId":"`+id+`"}`, nil))
+		if final["status"] != jobStatusRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if final["status"] != jobStatusDone {
+		t.Fatalf("status = %v, want done (%v)", final["status"], final)
+	}
+	if final["reply"] != "done thinking" {
+		t.Fatalf("reply = %v", final["reply"])
 	}
 }
+
+func TestAsyncRecordsFailure(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer gw.Close()
+
+	mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
+	id, _ := decode(t, post(t, mux, `{"action":"ask_async","message":"hi"}`, nil))["jobId"].(string)
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final map[string]any
+	for time.Now().Before(deadline) {
+		final = decode(t, post(t, mux, `{"action":"get_result","jobId":"`+id+`"}`, nil))
+		if final["status"] != jobStatusRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if final["status"] != jobStatusFailed {
+		t.Fatalf("status = %v, want failed", final["status"])
+	}
+	if final["ok"] != false {
+		t.Errorf("a failed job should report ok=false")
+	}
+}
+
+func TestGetResultUnknownJob(t *testing.T) {
+	gw := stubGateway(t, "x", nil)
+	defer gw.Close()
+
+	mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
+	rec := post(t, mux, `{"action":"get_result","jobId":"does-not-exist"}`, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Job store
+// ---------------------------------------------------------------------------
+
+func TestJobStoreSweepKeepsRunningJobs(t *testing.T) {
+	s := newJobStore(time.Millisecond)
+
+	running := s.start("agent:main:test")
+	finished := s.start("agent:main:test")
+	s.finish(finished.ID, "ok")
+
+	time.Sleep(10 * time.Millisecond)
+	removed := s.sweep(time.Now())
+
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, ok := s.get(running.ID); !ok {
+		t.Error("a running job must never be swept, however old")
+	}
+	if _, ok := s.get(finished.ID); ok {
+		t.Error("the finished job should be gone")
+	}
+}
+
+func TestJobStoreIsConcurrencySafe(t *testing.T) {
+	s := newJobStore(time.Hour)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			j := s.start("agent:main:test")
+			s.finish(j.ID, "reply")
+			if got, ok := s.get(j.ID); !ok || got.Reply != "reply" {
+				t.Errorf("job %s did not round-trip", j.ID)
+			}
+			s.sweep(time.Now())
+		}()
+	}
+	wg.Wait()
+}
+
+func TestJobIDsAreUnique(t *testing.T) {
+	s := newJobStore(time.Hour)
+	seen := map[string]bool{}
+	for i := 0; i < 500; i++ {
+		id := s.start("agent:main:test").ID
+		if seen[id] {
+			t.Fatalf("duplicate job id %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
 
 func TestAuthorizeRequest(t *testing.T) {
 	const key = "s3cr3t-bridge-key"
@@ -273,23 +401,16 @@ func TestAuthorizeRequest(t *testing.T) {
 		want     bool
 	}{
 		{"no key configured allows anything", "", nil, true},
-
-		// The header the OpenAPI schema declares, so this is what the GPT sends.
 		{"api_key header", key, map[string]string{"api_key": key}, true},
 		{"wrong api_key header", key, map[string]string{"api_key": "nope"}, false},
-
-		// Accepted fallback, for curl.
 		{"bearer token", key, map[string]string{"Authorization": "Bearer " + key}, true},
 		{"bearer is case-insensitive", key, map[string]string{"Authorization": "bearer " + key}, true},
 		{"raw authorization value", key, map[string]string{"Authorization": key}, true},
-
 		{"missing credential", key, nil, false},
 		{"wrong key", key, map[string]string{"Authorization": "Bearer nope"}, false},
 		{"empty bearer token", key, map[string]string{"Authorization": "Bearer "}, false},
 		{"scheme only", key, map[string]string{"Authorization": "Bearer"}, false},
 		{"key as prefix is not enough", key, map[string]string{"Authorization": "Bearer " + key + "extra"}, false},
-
-		// api_key takes precedence, so a bad one is not rescued by a good Bearer.
 		{"api_key wins over authorization", key, map[string]string{
 			"api_key": "nope", "Authorization": "Bearer " + key}, false},
 	}
@@ -303,455 +424,107 @@ func TestAuthorizeRequest(t *testing.T) {
 	}
 }
 
-// The endpoint must be closed when a key is configured, and the rejection must
-// not depend on the rest of the request being valid.
-func TestOpenClawEndpointRequiresAPIKey(t *testing.T) {
-	var upstreamHits int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamHits++
+func TestEndpointRequiresAPIKey(t *testing.T) {
+	var reached int
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached++
 		w.Header().Set("content-type", "application/json")
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}]}`))
 	}))
-	defer upstream.Close()
+	defer gw.Close()
 
-	cfg := config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		openclawWebhookURL: upstream.URL,
-		bridgeAPIKey:       "expected-key",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1024 * 1024,
-		httpClient:         upstream.Client(),
+	mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(`{"action":"ask","message":"hi"}`))
+	req.Header.Set("content-type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	mux := newMux(cfg)
-
-	body := `{"action":"create_flow","goal":"x"}`
-
-	t.Run("rejects without a key", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
-		req.Header.Set("content-type", "application/json")
-		mux.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401", rec.Code)
-		}
-		if got := rec.Header().Get("www-authenticate"); got == "" {
-			t.Errorf("expected a www-authenticate challenge header")
-		}
-		if upstreamHits != 0 {
-			t.Errorf("unauthenticated request reached OpenClaw %d times", upstreamHits)
-		}
-	})
-
-	t.Run("accepts with the key", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
-		req.Header.Set("content-type", "application/json")
-		req.Header.Set("Authorization", "Bearer expected-key")
-		mux.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		if upstreamHits != 1 {
-			t.Errorf("upstream hits = %d, want 1", upstreamHits)
-		}
-	})
-
-	// A bad key must fail before the bridge reveals configuration problems.
-	t.Run("auth is checked before configuration", func(t *testing.T) {
-		broken := newMux(config{serviceName: "x", bridgeAPIKey: "expected-key"}) // no webhook URL
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
-		mux2 := broken
-		mux2.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want 401 (not a 500 leaking config state)", rec.Code)
-		}
-	})
+	if rec.Header().Get("www-authenticate") == "" {
+		t.Error("expected a www-authenticate challenge")
+	}
+	if reached != 0 {
+		t.Errorf("unauthenticated request reached the gateway %d times", reached)
+	}
 }
 
-// Platform probes have no credentials, so these must stay open.
-func TestHealthEndpointsStayOpenWithAPIKeySet(t *testing.T) {
-	mux := newMux(config{serviceName: "openclaw-chatgpt-bridge", bridgeAPIKey: "expected-key"})
+// A bad key must fail before the bridge reveals configuration problems.
+func TestAuthIsCheckedBeforeConfiguration(t *testing.T) {
+	cfg := testConfig("")
+	cfg.gatewayURL = "" // misconfigured on purpose
+	mux := newMux(cfg, newJobStore(time.Hour))
 
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(`{"action":"ask","message":"hi"}`))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 rather than a 500 leaking config state", rec.Code)
+	}
+}
+
+func TestHealthEndpointsStayOpen(t *testing.T) {
+	mux := newMux(testConfig("http://127.0.0.1:1"), newJobStore(time.Hour))
 	for _, path := range []string{"/healthz", "/readyz", "/version"} {
 		t.Run(path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 			if rec.Code != http.StatusOK {
-				t.Fatalf("%s status = %d, want 200", path, rec.Code)
+				t.Fatalf("%s = %d, want 200", path, rec.Code)
 			}
 		})
 	}
 }
 
-func TestRejectInvalidAction(t *testing.T) {
-	normalized := normalizeInboundPayload(map[string]any{
-		"action": "bogus",
-	}, "")
+// ---------------------------------------------------------------------------
+// Request hygiene
+// ---------------------------------------------------------------------------
 
-	result := validateInboundPayload(normalized)
-	if result.OK {
-		t.Fatalf("expected invalid payload")
-	}
-	if len(result.Errors) == 0 {
-		t.Fatalf("expected validation errors")
-	}
-}
+func TestRequestHygiene(t *testing.T) {
+	gw := stubGateway(t, "ok", nil)
+	defer gw.Close()
+	mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
 
-func TestValidateFlowActionsRequireFlowID(t *testing.T) {
-	for _, action := range []string{"get_flow", "resume_flow", "finish_flow"} {
-		t.Run(action, func(t *testing.T) {
-			normalized := normalizeInboundPayload(map[string]any{
-				"action": action,
-			}, "")
-
-			result := validateInboundPayload(normalized)
-			if result.OK {
-				t.Fatalf("expected %s to require flowId", action)
-			}
-		})
-	}
-}
-
-func TestValidateNotifyPolicy(t *testing.T) {
-	normalized := normalizeInboundPayload(map[string]any{
-		"action":       "create_flow",
-		"goal":         "Build app",
-		"notifyPolicy": "unsupported",
-	}, "")
-
-	result := validateInboundPayload(normalized)
-	if result.OK {
-		t.Fatalf("expected invalid notify policy")
-	}
-}
-
-func TestForwardToOpenClaw(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Request-ID"); got != "test-request-123" {
-			t.Fatalf("unexpected request id header: %q", got)
+	t.Run("rejects GET", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/openclaw", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rec.Code)
 		}
-		if got := r.Header.Get("authorization"); got != "Bearer secret-123" {
-			t.Fatalf("unexpected authorization header: %q", got)
+	})
+
+	t.Run("rejects malformed JSON", func(t *testing.T) {
+		if rec := post(t, mux, `not json`, nil); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
 		}
-		if got := r.Header.Get("x-openclaw-webhook-secret"); got != "secret-123" {
-			t.Fatalf("unexpected secret header: %q", got)
+	})
+
+	t.Run("rejects trailing data", func(t *testing.T) {
+		rec := post(t, mux, `{"action":"ask","message":"a"}{"action":"ask","message":"b"}`, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
 		}
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode upstream payload: %v", err)
+	})
+
+	t.Run("rejects oversized bodies", func(t *testing.T) {
+		cfg := testConfig(gw.URL)
+		cfg.maxBodyBytes = 32
+		small := newMux(cfg, newJobStore(time.Hour))
+		rec := post(t, small, `{"action":"ask","message":"`+strings.Repeat("x", 500)+`"}`, nil)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", rec.Code)
 		}
-		if payload["action"] != "create_flow" {
-			t.Fatalf("unexpected action: %#v", payload["action"])
-		}
-		w.Header().Set("content-type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	}))
-	defer upstream.Close()
-
-	cfg := config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		port:               8080,
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1 << 20,
-		openclawWebhookURL: upstream.URL,
-		openclawSecret:     "secret-123",
-		sessionKey:         "agent:main:main",
-	}
-
-	result := forwardToOpenClaw(context.Background(), cfg, "test-request-123", buildOpenClawPayload(normalizeInboundPayload(map[string]any{
-		"action": "create_flow",
-		"goal":   "Build app",
-	}, cfg.sessionKey)))
-
-	if !result.OK {
-		t.Fatalf("expected upstream success, got: %#v", result)
-	}
-	if result.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d", result.Status)
-	}
+	})
 }
 
-func TestOpenClawEndpointMethodNotAllowed(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:    "openclaw-chatgpt-bridge",
-		requestTimeout: 2 * time.Second,
-		maxBodyBytes:   1 << 20,
-		sessionKey:     "agent:main:main",
-	}))
-	defer server.Close()
-
-	resp, err := http.Get(server.URL + "/v1/openclaw")
-	if err != nil {
-		t.Fatalf("GET /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", resp.StatusCode)
-	}
-}
-
-func TestVersionEndpoint(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:    "openclaw-chatgpt-bridge",
-		requestTimeout: 2 * time.Second,
-		maxBodyBytes:   1 << 20,
-		sessionKey:     "agent:main:main",
-	}))
-	defer server.Close()
-
-	resp, err := http.Get(server.URL + "/version")
-	if err != nil {
-		t.Fatalf("GET /version: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode version response: %v", err)
-	}
-	if body["name"] != "openclaw-chatgpt-bridge" {
-		t.Fatalf("expected name to match, got %#v", body["name"])
-	}
-	if body["version"] == "" {
-		t.Fatalf("expected non-empty version, got %#v", body["version"])
-	}
-	if body["commit"] == "" {
-		t.Fatalf("expected non-empty commit, got %#v", body["commit"])
-	}
-	if body["buildTime"] == "" {
-		t.Fatalf("expected non-empty buildTime, got %#v", body["buildTime"])
-	}
-}
-
-func TestVersionEndpointMethodNotAllowed(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:    "openclaw-chatgpt-bridge",
-		requestTimeout: 2 * time.Second,
-		maxBodyBytes:   1 << 20,
-		sessionKey:     "agent:main:main",
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/version", "application/json", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatalf("POST /version: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", resp.StatusCode)
-	}
-}
-
-func TestOpenClawEndpointForwardsRequestID(t *testing.T) {
-	observedRequestID := ""
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observedRequestID = r.Header.Get("X-Request-ID")
-		w.Header().Set("content-type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	}))
-	defer upstream.Close()
-
-	server := httptest.NewServer(newMux(config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1 << 20,
-		openclawWebhookURL: upstream.URL,
-		sessionKey:         "agent:main:main",
-		httpClient:         upstream.Client(),
-	}))
-	defer server.Close()
-
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/openclaw", strings.NewReader(`{"action":"create_flow","goal":"Build app"}`))
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Request-ID", "test-request-123")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	if observedRequestID != "test-request-123" {
-		t.Fatalf("expected request id to be forwarded, got %q", observedRequestID)
-	}
-}
-
-func TestOpenClawEndpointGeneratesRequestID(t *testing.T) {
-	observedRequestID := ""
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observedRequestID = r.Header.Get("X-Request-ID")
-		w.Header().Set("content-type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	}))
-	defer upstream.Close()
-
-	server := httptest.NewServer(newMux(config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1 << 20,
-		openclawWebhookURL: upstream.URL,
-		sessionKey:         "agent:main:main",
-		httpClient:         upstream.Client(),
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/v1/openclaw", "application/json", strings.NewReader(`{"action":"create_flow","goal":"Build app"}`))
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	if observedRequestID == "" {
-		t.Fatalf("expected generated request id to be forwarded")
-	}
-}
-
-func TestOpenClawEndpointInvalidJSON(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1 << 20,
-		openclawWebhookURL: "http://example.invalid",
-		sessionKey:         "agent:main:main",
-		httpClient:         &http.Client{Timeout: 2 * time.Second},
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/v1/openclaw", "application/json", strings.NewReader("{"))
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
-	}
-}
-
-func TestOpenClawEndpointMissingAction(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1 << 20,
-		openclawWebhookURL: "http://example.invalid",
-		sessionKey:         "agent:main:main",
-		httpClient:         &http.Client{Timeout: 2 * time.Second},
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/v1/openclaw", "application/json", strings.NewReader(`{"goal":"Build app"}`))
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
-	}
-}
-
-func TestOpenClawEndpointMissingWebhookURL(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:    "openclaw-chatgpt-bridge",
-		requestTimeout: 2 * time.Second,
-		maxBodyBytes:   1 << 20,
-		sessionKey:     "agent:main:main",
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/v1/openclaw", "application/json", strings.NewReader(`{"action":"create_flow","goal":"Build app"}`))
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", resp.StatusCode)
-	}
-}
-
-func TestOpenClawEndpointUpstream401(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message": "unauthorized",
-		})
-	}))
-	defer upstream.Close()
-
-	server := httptest.NewServer(newMux(config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       1 << 20,
-		openclawWebhookURL: upstream.URL,
-		sessionKey:         "agent:main:main",
-		httpClient:         upstream.Client(),
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/v1/openclaw", "application/json", strings.NewReader(`{"action":"create_flow","goal":"Build app"}`))
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", resp.StatusCode)
-	}
-
-	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response body: %v", err)
-	}
-	if body["ok"] != false {
-		t.Fatalf("expected ok=false, got %#v", body["ok"])
-	}
-	if body["error"] == "" {
-		t.Fatalf("expected useful error body, got %#v", body)
-	}
-	if body["upstreamStatus"] != float64(http.StatusUnauthorized) {
-		t.Fatalf("expected upstreamStatus 401, got %#v", body["upstreamStatus"])
-	}
-}
-
-func TestOpenClawEndpointOversizedBody(t *testing.T) {
-	server := httptest.NewServer(newMux(config{
-		serviceName:        "openclaw-chatgpt-bridge",
-		requestTimeout:     2 * time.Second,
-		maxBodyBytes:       16,
-		openclawWebhookURL: "http://example.invalid",
-		sessionKey:         "agent:main:main",
-		httpClient:         &http.Client{Timeout: 2 * time.Second},
-	}))
-	defer server.Close()
-
-	resp, err := http.Post(server.URL+"/v1/openclaw", "application/json", strings.NewReader(`{"action":"create_flow","goal":"`+strings.Repeat("x", 128)+`"}`))
-	if err != nil {
-		t.Fatalf("POST /v1/openclaw: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 400 or 413, got %d", resp.StatusCode)
+func TestMissingGatewayURLIsAServerError(t *testing.T) {
+	cfg := testConfig("")
+	mux := newMux(cfg, newJobStore(time.Hour))
+	rec := post(t, mux, `{"action":"ask","message":"hi"}`, nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }

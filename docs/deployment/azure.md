@@ -192,13 +192,13 @@ Ask the OpenClaw owner for one of these:
 The address may look like this:
 
 ```text
-http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
+http://openclaw-gateway.tailnet:18789
 ```
 
 Or, if you only have an IP address:
 
 ```text
-http://100.x.x.x:18789/plugins/webhooks/gpt
+http://100.x.x.x:18789
 ```
 
 Think of this as the bridge's private back door to OpenClaw.
@@ -234,8 +234,8 @@ Now create an `.env` file:
 ```bash
 sudo tee .env >/dev/null <<'EOF'
 ADDR=127.0.0.1:8080
-OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
-OPENCLAW_WEBHOOK_SECRET=replace-with-a-long-random-secret
+OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
+OPENCLAW_GATEWAY_TOKEN=replace-with-gateway-auth-token
 OPENCLAW_SESSION_KEY=agent:main:main
 BRIDGE_API_KEY=replace-with-a-long-random-secret
 REQUEST_TIMEOUT_MS=30000
@@ -247,7 +247,7 @@ EOF
 
 Every setting is explained once in
 **[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
-which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_WEBHOOK_SECRET` are two
+which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_GATEWAY_TOKEN` are two
 different secrets rather than one.
 
 Three things are specific to this VM setup:
@@ -262,7 +262,8 @@ Generate the two secrets rather than inventing them:
 
 ```bash
 openssl rand -hex 32   # BRIDGE_API_KEY
-openssl rand -hex 32   # OPENCLAW_WEBHOOK_SECRET, must match OpenClaw's own .env
+# OPENCLAW_GATEWAY_TOKEN is not generated: copy gateway.auth.token
+# from ~/.openclaw/openclaw.json
 ```
 
 Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
@@ -355,7 +356,8 @@ Run this command:
 ```bash
 curl -X POST https://bridge.yourdomain.com/v1/openclaw \
   -H 'content-type: application/json' \
-  --data '{"action":"create_flow","goal":"test"}'
+  -H "api_key: $BRIDGE_API_KEY" \
+  --data '{"action":"ask","message":"Confirm you are reachable."}'
 ```
 
 If it works, the bridge is ready.
@@ -667,8 +669,8 @@ setting means and how to generate `BRIDGE_API_KEY`.
 ```bash
 set -a; . ./.env; set +a
 
-: "${OPENCLAW_WEBHOOK_URL:?set it in .env}"
-: "${OPENCLAW_WEBHOOK_SECRET:?set it in .env}"
+: "${OPENCLAW_GATEWAY_URL:?set it in .env}"
+: "${OPENCLAW_GATEWAY_TOKEN:?set it in .env}"
 : "${BRIDGE_API_KEY:?set it in .env}"
 : "${TS_AUTHKEY:?set it in .env}"
 ```
@@ -709,8 +711,8 @@ properties:
     secrets:
       - name: tailscale-authkey
         value: ${TS_AUTHKEY}
-      - name: openclaw-webhook-secret
-        value: ${OPENCLAW_WEBHOOK_SECRET}
+      - name: gateway-token
+        value: ${OPENCLAW_GATEWAY_TOKEN}
       - name: bridge-api-key
         value: ${BRIDGE_API_KEY}
   template:
@@ -723,8 +725,8 @@ properties:
         env:
           - name: ADDR
             value: ":8080"
-          - name: OPENCLAW_WEBHOOK_URL
-            value: "${OPENCLAW_WEBHOOK_URL}"
+          - name: OPENCLAW_GATEWAY_URL
+            value: "${OPENCLAW_GATEWAY_URL}"
           - name: OPENCLAW_SESSION_KEY
             value: "${OPENCLAW_SESSION_KEY}"
           - name: REQUEST_TIMEOUT_MS
@@ -739,8 +741,8 @@ properties:
             value: "http://localhost:1055"
           - name: NO_PROXY
             value: "127.0.0.1,localhost"
-          - name: OPENCLAW_WEBHOOK_SECRET
-            secretRef: openclaw-webhook-secret
+          - name: OPENCLAW_GATEWAY_TOKEN
+            secretRef: gateway-token
           - name: BRIDGE_API_KEY
             secretRef: bridge-api-key
       - name: tailscale
@@ -797,8 +799,8 @@ properties:
     secrets:
       - name: tailscale-authkey
         value: ${TS_AUTHKEY}
-      - name: openclaw-webhook-secret
-        value: ${OPENCLAW_WEBHOOK_SECRET}
+      - name: gateway-token
+        value: ${OPENCLAW_GATEWAY_TOKEN}
       - name: bridge-api-key
         value: ${BRIDGE_API_KEY}
       - name: registry-password
@@ -817,8 +819,8 @@ properties:
         env:
           - name: ADDR
             value: ":8080"
-          - name: OPENCLAW_WEBHOOK_URL
-            value: "${OPENCLAW_WEBHOOK_URL}"
+          - name: OPENCLAW_GATEWAY_URL
+            value: "${OPENCLAW_GATEWAY_URL}"
           - name: OPENCLAW_SESSION_KEY
             value: "${OPENCLAW_SESSION_KEY}"
           - name: REQUEST_TIMEOUT_MS
@@ -833,8 +835,8 @@ properties:
             value: "http://localhost:1055"
           - name: NO_PROXY
             value: "127.0.0.1,localhost"
-          - name: OPENCLAW_WEBHOOK_SECRET
-            secretRef: openclaw-webhook-secret
+          - name: OPENCLAW_GATEWAY_TOKEN
+            secretRef: gateway-token
           - name: BRIDGE_API_KEY
             secretRef: bridge-api-key
       - name: tailscale
@@ -925,7 +927,7 @@ rm app.yaml
 ChatGPT is on the public internet. With `external: false` the app is only reachable from inside the environment, and every ChatGPT call fails.
 The bridge is still protected, because OpenClaw only accepts calls carrying the webhook secret.
 
-**`OPENCLAW_WEBHOOK_URL` must not be `localhost`.**
+**`OPENCLAW_GATEWAY_URL` must not be `localhost`.**
 Go never sends requests for `localhost` or `127.0.0.1` through `HTTP_PROXY`, no matter how the proxy is configured.
 If you point the bridge at a loopback address it will quietly skip Tailscale and fail to reach OpenClaw.
 Always use the tailnet hostname or the `100.x.x.x` address.
@@ -962,7 +964,8 @@ If it says `tailscale proxy not ready`, your auth key is wrong or expired.
 ```bash
 curl -X POST "$BRIDGE_URL/v1/openclaw" \
   -H 'content-type: application/json' \
-  --data '{"action":"create_flow","goal":"test"}'
+  -H "api_key: $BRIDGE_API_KEY" \
+  --data '{"action":"ask","message":"Confirm you are reachable."}'
 ```
 
 If it works, the bridge is ready.
@@ -1023,7 +1026,7 @@ set -a; . ./.env; set +a
 az containerapp secret set \
   --name openclaw-bridge --resource-group openclaw-bridge \
   --secrets "bridge-api-key=$BRIDGE_API_KEY" \
-            "openclaw-webhook-secret=$OPENCLAW_WEBHOOK_SECRET" \
+            "gateway-token=$OPENCLAW_GATEWAY_TOKEN" \
             "tailscale-authkey=$TS_AUTHKEY"
 ```
 
@@ -1089,7 +1092,7 @@ restarting whichever processes read it at startup — on both sides of the bridg
 - [ ] Ingress is `external: true`
 - [ ] `/healthz` returns JSON
 - [ ] `/readyz` reports ready, proving Tailscale connected
-- [ ] `OPENCLAW_WEBHOOK_URL` uses a tailnet address, not localhost
+- [ ] `OPENCLAW_GATEWAY_URL` uses a tailnet address, not localhost
 - [ ] Custom GPT action imported and pointed at the Container Apps URL
 
 ### Short summary

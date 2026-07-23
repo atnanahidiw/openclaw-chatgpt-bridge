@@ -43,12 +43,13 @@
           <div class="nav-group">
             <p class="nav-label">Get started</p>
             <a class="nav-link{% if page.url == '/step-by-step.html' %} is-active{% endif %}" href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
-            <a class="nav-link{% if page.url == '/commands.html' %} is-active{% endif %}" href="{{ '/commands.html' | relative_url }}">Commands</a>
             <a class="nav-link{% if page.url == '/troubleshooting.html' %} is-active{% endif %}" href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
           </div>
 
           <div class="nav-group">
             <p class="nav-label">Deploy</p>
+            <a class="nav-link{% if page.url == '/deployment/' %} is-active{% endif %}" href="{{ '/deployment/' | relative_url }}">Overview</a>
+            <a class="nav-link{% if page.url == '/deployment/free-tier.html' %} is-active{% endif %}" href="{{ '/deployment/free-tier.html' | relative_url }}">Free options</a>
             <a class="nav-link{% if page.url == '/deployment/aws.html' %} is-active{% endif %}" href="{{ '/deployment/aws.html' | relative_url }}">Amazon Web Services</a>
             <a class="nav-link{% if page.url == '/deployment/azure.html' %} is-active{% endif %}" href="{{ '/deployment/azure.html' | relative_url }}">Microsoft Azure</a>
             <a class="nav-link{% if page.url == '/deployment/digital-ocean.html' %} is-active{% endif %}" href="{{ '/deployment/digital-ocean.html' | relative_url }}">DigitalOcean</a>
@@ -69,9 +70,9 @@
           <nav>
             <a href="{{ '/' | relative_url }}">Introduction</a>
             <a href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
-            <a href="{{ '/commands.html' | relative_url }}">Commands</a>
             <a href="{{ '/usecases.html' | relative_url }}">Use cases</a>
             <a href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
+            <a href="{{ '/deployment/' | relative_url }}">Deployment overview</a>
             <a href="{{ '/deployment/aws.html' | relative_url }}">AWS deployment</a>
             <a href="{{ '/deployment/azure.html' | relative_url }}">Azure deployment</a>
             <a href="{{ '/deployment/digital-ocean.html' | relative_url }}">DigitalOcean deployment</a>

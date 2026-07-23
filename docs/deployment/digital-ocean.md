@@ -150,7 +150,7 @@ This is the private path between the bridge and OpenClaw.
 The bridge should talk to OpenClaw using a **tailnet address** such as:
 
 ```text
-http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
+http://openclaw-gateway.tailnet:18789
 ```
 
 Think of this as the bridge's private back door to OpenClaw.
@@ -167,13 +167,13 @@ Ask the person who manages OpenClaw for one of these:
 If the OpenClaw machine is named `openclaw-gateway` in Tailscale, the address will often look like:
 
 ```text
-http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
+http://openclaw-gateway.tailnet:18789
 ```
 
 If you only have the IP address, it may look like this instead:
 
 ```text
-http://100.x.x.x:18789/plugins/webhooks/gpt
+http://100.x.x.x:18789
 ```
 
 ### Check that the private connection works
@@ -205,8 +205,8 @@ Now create an `.env` file:
 ```bash
 sudo tee .env >/dev/null <<'EOF'
 ADDR=127.0.0.1:8080
-OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
-OPENCLAW_WEBHOOK_SECRET=replace-with-a-long-random-secret
+OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
+OPENCLAW_GATEWAY_TOKEN=replace-with-gateway-auth-token
 OPENCLAW_SESSION_KEY=agent:main:main
 BRIDGE_API_KEY=replace-with-a-long-random-secret
 REQUEST_TIMEOUT_MS=30000
@@ -218,7 +218,7 @@ EOF
 
 Every setting is explained once in
 **[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
-which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_WEBHOOK_SECRET` are two
+which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_GATEWAY_TOKEN` are two
 different secrets rather than one.
 
 Three things are specific to this VM setup:
@@ -233,7 +233,8 @@ Generate the two secrets rather than inventing them:
 
 ```bash
 openssl rand -hex 32   # BRIDGE_API_KEY
-openssl rand -hex 32   # OPENCLAW_WEBHOOK_SECRET, must match OpenClaw's own .env
+# OPENCLAW_GATEWAY_TOKEN is not generated: copy gateway.auth.token
+# from ~/.openclaw/openclaw.json
 ```
 
 Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
@@ -326,7 +327,8 @@ Run this command:
 ```bash
 curl -X POST https://bridge.yourdomain.com/v1/openclaw \
   -H 'content-type: application/json' \
-  --data '{"action":"create_flow","goal":"test"}'
+  -H "api_key: $BRIDGE_API_KEY" \
+  --data '{"action":"ask","message":"Confirm you are reachable."}'
 ```
 
 If it works, the bridge is ready.

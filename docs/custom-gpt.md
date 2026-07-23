@@ -11,8 +11,8 @@ bridge is deployed and answering on a public HTTPS URL.
 
 ## One-sentence explanation
 
-**The Custom GPT calls one action, the bridge forwards it to OpenClaw, and OpenClaw does
-the work.**
+**The Custom GPT delegates work to OpenClaw as an external tool, and reports back what
+OpenClaw actually did.**
 
 ## Before you start
 
@@ -65,7 +65,7 @@ servers:
 **This is the step people forget.** If you leave the placeholder, every call fails or, worse,
 goes somewhere that is not yours.
 
-After importing you should see one available action: `sendToOpenClawBridge`.
+After importing you should see one available action: `sendToOpenClaw`.
 
 ---
 
@@ -119,12 +119,12 @@ KEY=your-key
 
 # no credential -> 401
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
-  -H 'content-type: application/json' -d '{"action":"get_flow","flowId":"probe"}'
+  -H 'content-type: application/json' -d '{"action":"ask","message":"ping"}'
 
 # with the key -> 200
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
   -H 'content-type: application/json' -H "api_key: $KEY" \
-  -d '{"action":"get_flow","flowId":"probe"}'
+  -d '{"action":"ask","message":"ping"}'
 ```
 
 `401` then `200` means the endpoint is closed and your key works. Two `200`s mean the key is
@@ -147,94 +147,119 @@ changing it.
 
 ## Step 4 — Give the GPT instructions
 
-Without instructions the model will guess at the contract and get rejected — most often by
-inventing an `expectedRevision` instead of reading one.
+Frame OpenClaw as **an external tool the GPT delegates to**, not a chatbot it talks with.
+That framing matters: OpenClaw runs on a real machine with shell access, file access, and
+your configured skills. It executes. The GPT's job is to decide *what* to delegate, then
+report back what came out.
 
 Paste this into the **Instructions** box and edit to taste:
 
 ```text
-You drive an OpenClaw automation bridge through the sendToOpenClawBridge action.
+You have one external tool: OpenClaw, reached through the sendToOpenClaw action.
 
-WORKFLOW
-- Start work with create_flow and a clear, specific goal. Remember the returned
-  flowId for the rest of the conversation.
-- Send work with run_task: it needs flowId, task, and runtime. Use runtime
-  "subagent" unless the user asks otherwise.
-- Check progress with get_flow.
-- Close work with finish_flow when the user says it is done.
+WHAT OPENCLAW IS
+OpenClaw is an autonomous agent running on the user's own machine. It can read
+and write files, run shell commands, and use its installed skills. It is not a
+chat partner: it carries out instructions and reports what it did. Treat it the
+way you would treat a capable engineer you are handing a ticket to.
 
-EXPECTED REVISION - THIS IS THE PART THAT BREAKS
-resume_flow and finish_flow both require expectedRevision, and you cannot guess it.
-Always call get_flow first, read the "revision" number from the response, and pass
-that exact value. The revision changes after every write, so re-read it before each
-one. Never invent, reuse, or increment it yourself.
+Your job is to decide what to delegate, phrase it precisely, and relay the
+result. Do not pretend to do the work yourself, and never invent an answer you
+did not receive from OpenClaw.
 
-FIELD RULES
-- notifyPolicy accepts only: done_only, state_changes, silent.
-  It is valid on create_flow and run_task only. Never send it to get_flow,
-  resume_flow, or finish_flow.
-- status on create_flow: queued, running, waiting, or blocked.
-- status on run_task and resume_flow: queued or running.
-- finish_flow and get_flow accept no status at all.
-- Never send sessionKey. OpenClaw decides which session owns the work.
-- Send only the fields the action accepts. Extra fields fail the whole request.
+CHOOSING THE RIGHT CALL
+- ask: quick questions and small tasks. It waits for the answer. Expect roughly
+  30 seconds even for something trivial, because a real agent turn is starting up.
+- ask_async: anything involving reading files, searching, editing, running
+  commands, or multi-step work. It returns a jobId immediately.
+- get_result: fetch an async reply using that jobId.
+
+When unsure, prefer ask_async. A sync call that exceeds the timeout wastes the
+whole turn; an async call never does.
+
+THE ASYNC LOOP
+1. Call ask_async with a specific instruction. Keep the jobId.
+2. Tell the user the work has started, in one short sentence.
+3. Call get_result with that jobId.
+4. status "running" means keep waiting. Wait several seconds before polling
+   again. Do not poll in a tight loop.
+5. status "done" means read the reply field and report it.
+6. status "failed" means read the error field, tell the user plainly, and stop.
+   Follow the hint field: if it says the turn will not complete, do not retry.
+
+CONVERSATION CONTINUITY
+Pass the same `user` value on every call in one conversation, so OpenClaw keeps
+context between turns. Invent one stable string at the start of the chat, for
+example "conv:" plus a short random suffix. Change it only when the user asks to
+start fresh.
+
+WRITING GOOD INSTRUCTIONS
+- Be specific about the goal and what "done" looks like.
+- Name paths, files, or commands when you know them.
+- Ask for exact output when you need it verbatim, and say "do not guess".
+- One task per call. Do not bundle unrelated work.
+
+REPORTING BACK
+- Relay what OpenClaw actually said. Quote it when the wording matters.
+- If OpenClaw reports a failure or a partial result, say so plainly. Never
+  present a failure as a success.
+- If a reply looks wrong or incomplete, say what you noticed rather than
+  smoothing over it.
 
 ERRORS
-- "Unrecognized keys" means you sent a field that action does not accept. Remove it
-  and retry with only the allowed fields.
-- "expectedRevision is required" means you skipped get_flow. Call it, then retry.
-- A 401 with body {"error":"unauthorized"} means the Action's api_key is missing or
-  wrong. A 401 carrying an upstreamStatus means OpenClaw rejected the bridge's own
-  secret. Either way, tell the user plainly and do not retry: retrying cannot fix a
-  credential mismatch.
-- Report failures exactly as returned. Never claim work succeeded when it did not.
+- 401 with error "unauthorized": the Action's api_key is missing or wrong. Tell
+  the user to check it. Do not retry.
+- 500: the bridge is misconfigured, often a bad gateway token. Not retryable.
+- 502: OpenClaw was unreachable. The user's machine may be asleep or offline.
+- 504: the turn took too long. Retry with ask_async instead.
+- 400 with details: read the details list, fix the fields, retry once.
 
-STYLE
-- Confirm the goal before creating a flow.
-- After each call, tell the user what happened in one short sentence.
-- Show the flowId when it changes, so the user can follow along.
+SAFETY
+OpenClaw acts on a real machine. Before delegating anything destructive —
+deleting files, force-pushing, changing system settings — confirm with the user
+first, and repeat back exactly what will happen.
 ```
 
-### Why the revision rule needs saying twice
+### Why the async loop needs spelling out
 
-`expectedRevision` is optimistic concurrency: OpenClaw rejects a write whose revision does
-not match current state. A model that guesses `0`, or increments its last value, fails
-intermittently — which is harder to debug than failing every time.
+Left to itself a model tends to call `ask` for everything, hit the timeout, and report
+failure for work that would have succeeded. It also tends to poll `get_result` immediately
+and repeatedly rather than waiting. Both behaviours are cheap to prevent in the instructions
+and annoying to debug afterwards.
 
 ---
 
 ## Step 5 — Test it
 
-Save the GPT, then work up from the simplest call.
+Save the GPT, then work up from the smallest call.
 
-### 1. A read that changes nothing
-
-```text
-Check the status of flow probe
-```
-
-Expect the GPT to call `get_flow` and report that nothing was found. This proves the
-action, the URL, and the network path.
-
-### 2. Create something
+### 1. Prove the connection
 
 ```text
-Create a flow to review the deployment docs and list anything out of date
+Ask OpenClaw to confirm it is reachable and name its working directory.
 ```
 
-Expect a `flowId` back. Note it.
+Expect an `ask`, and a real path in the answer. This proves the Action, the URL, the API
+key, and the network path in one step. Takes around 30 seconds.
 
-### 3. The revision round-trip
+### 2. Prove it can act
 
 ```text
-Finish that flow
+Ask OpenClaw to run `sw_vers` and paste the exact output.
 ```
 
-This is the real test. The GPT should call `get_flow` first, read the revision, then call
-`finish_flow` with it. If it goes straight to `finish_flow`, your instructions are not
-being followed — tighten the wording in Step 4.
+The output should be real system information, not a plausible guess. If you get something
+that looks invented, the GPT is answering for itself instead of delegating — tighten the
+"never invent an answer" line in the instructions.
 
----
+### 3. Prove the async loop
+
+```text
+Ask OpenClaw to summarize what is in its workspace, reading files as needed.
+```
+
+Watch that the GPT calls `ask_async`, tells you it started, then polls `get_result` with
+sensible gaps rather than hammering it. Real work takes a minute or two.
 
 ## Day-to-day use
 
@@ -253,10 +278,20 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 
 | What you see in ChatGPT | Cause | Fix |
 |---|---|---|
+| "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge takes a few seconds — ask again |
+| Talks about calling the action but nothing happens | The action was saved without importing cleanly | Re-import the schema and confirm `sendToOpenClaw` is listed |
+| `401`, body `{"error":"unauthorized"}` | The Action's `api_key` is missing or wrong | Re-check Step 3: it must equal `BRIDGE_API_KEY` on the bridge |
+| `504`, or the GPT reports a timeout | A slow task was sent with `ask` | Strengthen the CHOOSING THE RIGHT CALL section so it prefers `ask_async` |
+| `500` | The bridge's own gateway token is wrong, or its URL is unset | Server-side. Check `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_GATEWAY_URL` |
+| `502` | OpenClaw was unreachable | The machine running OpenClaw may be asleep, offline, or off the tailnet |
+| `404` on `get_result` | The jobId expired, or the bridge restarted and lost it | Jobs are in memory. Start the work again |
+| Answers look invented rather than executed | The GPT answered instead of delegating | Tighten "never invent an answer you did not receive from OpenClaw" |
+| Polls `get_result` in a tight loop | Instructions not followed | Re-state the wait-several-seconds rule |
+
+---|---|---|
 | "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge can take several seconds — ask again |
-| Talks about calling the action but nothing happens | The action was saved without being imported cleanly | Re-import the schema and confirm `sendToOpenClawBridge` is listed |
+| Talks about calling the action but nothing happens | The action was saved without being imported cleanly | Re-import the schema and confirm `sendToOpenClaw` is listed |
 | `Unrecognized keys` | The model added a field the action does not accept | Strengthen the FIELD RULES section of the instructions |
-| `expectedRevision is required` | The model skipped `get_flow` | Strengthen the EXPECTED REVISION section |
 | `401`, body is `{"error":"unauthorized"}` | The Action's `api_key` is missing or wrong | Re-check Step 3: the Action credential must equal `BRIDGE_API_KEY` on the bridge |
 | `401` with an `upstreamStatus` field | OpenClaw rejected the bridge's own webhook secret | See [Troubleshooting]({{ '/troubleshooting.html' | relative_url }}) — usually a missed restart |
 | First call each morning fails, later ones work | Cold start | Retry, or run with `minReplicas: 1` and leave the free tier |
@@ -267,11 +302,10 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 
 - [ ] Bridge answers on `/healthz` and `/readyz`
 - [ ] GPT created
-- [ ] Schema imported, `sendToOpenClawBridge` visible
+- [ ] Schema imported, `sendToOpenClaw` visible
 - [ ] `servers:` URL points at **your** bridge
 - [ ] `BRIDGE_API_KEY` set on the bridge, same value saved in the Action
 - [ ] Unauthenticated request returns `401`, authenticated returns `200`
-- [ ] Instructions pasted, including the expectedRevision rule
-- [ ] `get_flow` works from a prompt
-- [ ] `create_flow` returns a flowId
-- [ ] `finish_flow` works, with the GPT reading the revision first
+- [ ] Instructions pasted, including the async loop and the external-tool framing
+- [ ] A simple `ask` returns a real answer
+- [ ] An `ask_async` task completes and the GPT reports the reply

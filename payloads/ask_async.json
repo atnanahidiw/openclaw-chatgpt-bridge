@@ -1,0 +1,5 @@
+{
+  "action": "ask_async",
+  "message": "Summarize what this repository does in 3 bullet points, reading files as needed.",
+  "user": "conv:local-test"
+}

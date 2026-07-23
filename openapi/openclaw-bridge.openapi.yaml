@@ -1,9 +1,15 @@
 openapi: 3.1.0
 info:
   title: OpenClaw ChatGPT Bridge
-  version: 1.0.0
+  version: 2.0.0
   description: >
-    OpenAPI schema for a Custom GPT Action that calls the bridge service.
+    Delegate work to an OpenClaw agent. The bridge forwards each request to
+    OpenClaw's Gateway, which runs a real agent turn with its tools and skills,
+    and returns what the agent said.
+
+
+    Use `ask` for quick questions, `ask_async` plus `get_result` for anything
+    that takes real work.
 servers:
   - url: https://bridge.example.com
 security:
@@ -11,9 +17,12 @@ security:
 paths:
   /v1/openclaw:
     post:
-      operationId: sendToOpenClawBridge
-      summary: Send a task to the OpenClaw bridge
-      description: The bridge validates the request and forwards it to OpenClaw.
+      operationId: sendToOpenClaw
+      summary: Send an instruction to the OpenClaw agent
+      description: >
+        Runs an OpenClaw agent turn and returns the agent's reply. OpenClaw can
+        read and write files, run shell commands, and use its configured skills,
+        so treat it as an assistant that acts rather than one that only answers.
       requestBody:
         required: true
         content:
@@ -27,141 +36,131 @@ paths:
                 action:
                   type: string
                   enum:
-                    - create_flow
-                    - run_task
-                    - get_flow
-                    - resume_flow
-                    - finish_flow
+                    - ask
+                    - ask_async
+                    - get_result
                   description: >
-                    OpenClaw operation to perform. create_flow creates a new flow.
-                    run_task sends work to an existing flow. get_flow checks status.
-                    resume_flow resumes a paused flow. finish_flow closes a flow.
-                flowId:
+                    ask runs a turn and waits for the reply. ask_async starts a
+                    turn and returns a jobId immediately. get_result reads an
+                    async turn's reply by jobId.
+                message:
                   type: string
                   description: >
-                    Existing OpenClaw flow ID. Required for get_flow, resume_flow,
-                    and finish_flow. Usually required for run_task when continuing
-                    an existing flow.
+                    What OpenClaw should do, in plain language. Required for ask
+                    and ask_async. Be specific: it is executing, not chatting.
+                jobId:
+                  type: string
+                  description: >
+                    Identifier returned by ask_async. Required for get_result.
                 sessionKey:
                   type: string
                   description: >
-                    Advisory only, recorded in the bridge log. It is NOT sent to
-                    OpenClaw: the webhook route is bound to a session by OpenClaw
-                    configuration, so a caller cannot choose one.
-                goal:
+                    OpenClaw session that owns the work. Defaults to the bridge's
+                    configured session. Must not use the reserved namespaces
+                    subagent:, cron:, or acp:.
+                user:
                   type: string
                   description: >
-                    Human-readable project goal. Required for create_flow.
-                task:
-                  type: string
-                  description: >
-                    Instruction or message to send to OpenClaw. Required for run_task.
-                runtime:
-                  type: string
-                  enum:
-                    - subagent
-                    - acp
-                  description: >
-                    Execution runtime for the child task. Required for run_task.
-                childSessionKey:
-                  type: string
-                  description: >
-                    Optional session for the child task created by run_task.
-                expectedRevision:
-                  type: integer
-                  minimum: 0
-                  description: >
-                    Flow revision the caller expects, for optimistic concurrency.
-                    Required for resume_flow and finish_flow. Read the current
-                    value from the get_flow response before calling either.
-                status:
-                  type: string
-                  description: >
-                    Optional status hint. create_flow accepts queued, running,
-                    waiting, or blocked. run_task and resume_flow accept queued or
-                    running. get_flow and finish_flow do not accept it.
-                notifyPolicy:
-                  type: string
-                  enum:
-                    - done_only
-                    - state_changes
-                    - silent
-                  default: done_only
-                  description: >
-                    Notification behavior, honored by create_flow and run_task only.
-                    done_only sends only final updates. state_changes sends progress
-                    events. silent suppresses notifications.
-                metadata:
-                  type: object
-                  additionalProperties: true
-                  description: >
-                    Free-form annotations. Forwarded as OpenClaw's stateJson on
-                    create_flow, resume_flow, and finish_flow; ignored for get_flow
-                    and run_task, which do not accept it.
+                    Stable identifier for this conversation. Pass the same value
+                    on every call in one chat so OpenClaw keeps context between
+                    turns; change it to start fresh.
             examples:
-              createFlow:
-                summary: Create a new OpenClaw flow
+              ask:
+                summary: A quick question or small task
                 value:
-                  action: create_flow
-                  goal: Check the deployment status and summarize any errors.
-                  notifyPolicy: done_only
-                  metadata:
-                    source: chatgpt-action
-              runTask:
-                summary: Run a task in an existing flow
+                  action: ask
+                  message: Summarize the deployment docs and list anything out of date.
+                  user: conv:2026-07-23-abc
+              askAsync:
+                summary: Start longer work without waiting
                 value:
-                  action: run_task
-                  flowId: flow_123
-                  runtime: subagent
-                  task: Continue from the last result and inspect the failed pod logs.
-                  notifyPolicy: state_changes
-              getFlow:
-                summary: Get flow status, and read the revision the next call needs
+                  action: ask_async
+                  message: Review the repository and list release blockers.
+                  user: conv:2026-07-23-abc
+              getResult:
+                summary: Collect the reply from an async turn
                 value:
-                  action: get_flow
-                  flowId: flow_123
-              resumeFlow:
-                summary: Resume a paused flow
-                value:
-                  action: resume_flow
-                  flowId: flow_123
-                  expectedRevision: 3
-                  status: running
-              finishFlow:
-                summary: Finish a flow
-                value:
-                  action: finish_flow
-                  flowId: flow_123
-                  expectedRevision: 4
+                  action: get_result
+                  jobId: a15b1d0cac4056c23c415f65
       responses:
         "200":
-          description: Bridge accepted the request and OpenClaw returned a 2xx.
+          description: >
+            The turn finished (ask), or the job's current state was read
+            (get_result).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BridgeSuccess"
+                $ref: "#/components/schemas/BridgeReply"
+              examples:
+                answered:
+                  summary: ask returned a reply
+                  value:
+                    ok: true
+                    bridge: openclaw-chatgpt-bridge
+                    reply: The deployment docs are current except the AWS page.
+                    sessionKey: agent:main:chatgpt
+                stillRunning:
+                  summary: get_result while the turn is still going
+                  value:
+                    ok: true
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: running
+                    elapsedMs: 8400
+                    hint: still running; poll again in a few seconds
+                failed:
+                  summary: get_result for a turn that failed
+                  value:
+                    ok: false
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: failed
+                    error: OpenClaw did not reply in time
+                    hint: this turn will not complete; read error and retry only if it is transient
+        "202":
+          description: An async turn was accepted and is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeReply"
+              examples:
+                accepted:
+                  value:
+                    ok: true
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: running
+                    sessionKey: agent:main:chatgpt
+                    hint: poll get_result with this jobId until status is done or failed
         "400":
-          description: >
-            The body was not a single JSON object, or it failed validation.
-            Validation failures list every problem in `details`.
+          description: The body was not a single JSON object, or it failed validation.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeError"
               examples:
-                validationFailed:
-                  summary: Missing a field the action requires
+                missingMessage:
                   value:
                     ok: false
                     error: invalid request
                     details:
-                      - flowId is required for run_task
-                      - task is required for run_task
-                malformedBody:
-                  summary: Body was not a JSON object
+                      - message is required for ask
+        "401":
+          description: >
+            The api_key was missing or wrong. This is the bridge rejecting the
+            caller, not OpenClaw rejecting the bridge.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+              examples:
+                unauthorized:
                   value:
                     ok: false
-                    error: request body must be JSON object
+                    error: unauthorized
+        "404":
+          description: The jobId is unknown. It may have expired, or the bridge restarted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
         "405":
           description: Method other than POST.
           content:
@@ -175,56 +174,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/BridgeError"
         "500":
-          description: Bridge is misconfigured, e.g. OPENCLAW_WEBHOOK_URL is unset.
+          description: >
+            The bridge is misconfigured — for example its gateway URL is unset,
+            or OpenClaw rejected the bridge's own credential. Nothing the caller
+            can fix by retrying.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeError"
         "502":
-          description: OpenClaw was unreachable or its response could not be read.
+          description: OpenClaw was unreachable, or returned something unusable.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeError"
         "504":
-          description: OpenClaw did not respond within REQUEST_TIMEOUT_MS.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BridgeError"
-        "401":
           description: >
-            The bridge's own API key was missing or wrong. This is the bridge
-            rejecting the caller, and is unrelated to the separate secret the
-            bridge uses when it talks to OpenClaw.
+            The turn exceeded REQUEST_TIMEOUT_MS. Use ask_async for work that
+            takes this long.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeError"
-              examples:
-                missingKey:
-                  summary: No credential presented
-                  value:
-                    ok: false
-                    error: unauthorized
-        default:
-          description: >
-            OpenClaw returned a non-2xx status and the bridge mirrored it. The
-            status is whatever OpenClaw sent, so this set is open: a 401 from
-            OpenClaw surfaces here as a 401.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BridgeError"
-              examples:
-                upstreamRejected:
-                  summary: OpenClaw rejected the webhook secret
-                  value:
-                    ok: false
-                    error: OpenClaw returned non-2xx status
-                    upstreamStatus: 401
-                    upstreamBody:
-                      message: unauthorized
 
 components:
   securitySchemes:
@@ -238,14 +209,9 @@ components:
         API Key -> Auth Type "Custom", and set the custom header name to api_key.
         The bridge also accepts the same value as Authorization: Bearer <key>,
         which is handy for curl.
-  schemas:
-    UpstreamBody:
-      description: >
-        OpenClaw response body, passed through unchanged. Parsed JSON when
-        OpenClaw replies with application/json, otherwise the raw body as a
-        string. Not constrained to an object.
 
-    BridgeSuccess:
+  schemas:
+    BridgeReply:
       type: object
       additionalProperties: true
       required:
@@ -253,15 +219,45 @@ components:
       properties:
         ok:
           type: boolean
-          description: Always true on this response.
+          description: False when the request failed or an async turn failed.
         bridge:
           type: string
           description: Bridge service name.
-        upstreamStatus:
+        reply:
+          type: string
+          description: >
+            What the OpenClaw agent said. Present on a successful ask, and on
+            get_result once status is done.
+        jobId:
+          type: string
+          description: Async job identifier. Present for ask_async and get_result.
+        status:
+          type: string
+          enum:
+            - running
+            - done
+            - failed
+          description: State of an async turn.
+        sessionKey:
+          type: string
+          description: OpenClaw session the turn ran in.
+        startedAt:
+          type: string
+          format: date-time
+          description: When the async turn started.
+        failedAt:
+          type: string
+          format: date-time
+          description: When the async turn failed, if it did.
+        elapsedMs:
           type: integer
-          description: Status code OpenClaw returned.
-        upstreamBody:
-          $ref: "#/components/schemas/UpstreamBody"
+          description: How long the turn has run, or did run.
+        error:
+          type: string
+          description: Why it failed, in plain language.
+        hint:
+          type: string
+          description: What to do next. Follow it rather than guessing.
 
     BridgeError:
       type: object
@@ -283,10 +279,3 @@ components:
           description: >
             Present only on validation failures. Lists every problem found, not
             just the first, so all of them can be fixed in one retry.
-        upstreamStatus:
-          type: integer
-          description: >
-            Present only when the request reached OpenClaw and it replied
-            non-2xx.
-        upstreamBody:
-          $ref: "#/components/schemas/UpstreamBody"

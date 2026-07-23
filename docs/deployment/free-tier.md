@@ -76,7 +76,7 @@ Whichever platform you choose, three things hold true:
 **Tailscale must run in userspace mode.**
 Serverless platforms do not give containers the privileges needed for a normal VPN network device. Userspace mode works without one and offers a local proxy instead.
 
-**`OPENCLAW_WEBHOOK_URL` must be a tailnet address.**
+**`OPENCLAW_GATEWAY_URL` must be a tailnet address.**
 Go never sends requests for `localhost` or `127.0.0.1` through a proxy. Point the bridge at a loopback address and it will silently skip Tailscale. Use the tailnet hostname or the `100.x.x.x` address.
 
 **If OpenClaw sits behind `tailscale serve`, the URL is `https` with no port.**

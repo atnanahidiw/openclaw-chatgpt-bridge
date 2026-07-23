@@ -13,7 +13,7 @@ guides, in this order:
 
 | | Guide | What it gives you |
 |---|---|---|
-| 1 | [OpenClaw setup and testing]({{ '/openclaw-setup.html' | relative_url }}) | The webhook route the bridge posts to, plus the two values it needs: `OPENCLAW_WEBHOOK_URL` and `OPENCLAW_WEBHOOK_SECRET` |
+| 1 | [OpenClaw setup and testing]({{ '/openclaw-setup.html' | relative_url }}) | The Gateway endpoint the bridge calls, plus the two values it needs: `OPENCLAW_GATEWAY_URL` and `OPENCLAW_GATEWAY_TOKEN` |
 | 2 | **This page** | The bridge itself, running and reachable |
 | 3 | [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}) | The action imported into ChatGPT, with instructions the model can actually follow |
 
@@ -69,8 +69,9 @@ Then open it and set the values below. `.env` is gitignored — never commit it.
 | `ADDR` | no | Address the bridge binds. Defaults to `:8080`. **`PORT` is read but not used for binding** |
 | `REQUEST_TIMEOUT_MS` | no | How long to wait for OpenClaw. Default `30000` |
 | `MAX_BODY_BYTES` | no | Maximum request size. Default `1048576` |
-| `OPENCLAW_WEBHOOK_URL` | **yes** | The OpenClaw webhook address. From [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}) |
-| `OPENCLAW_WEBHOOK_SECRET` | **yes** | Shared secret the bridge presents **to** OpenClaw. Must match what OpenClaw resolves |
+| `OPENCLAW_GATEWAY_URL` | **yes** | Base URL of the OpenClaw Gateway. The bridge appends `/v1/chat/completions` |
+| `OPENCLAW_GATEWAY_TOKEN` | **yes** | Gateway token, from `gateway.auth.token`. **Full operator access** — it never leaves the bridge |
+| `OPENCLAW_AGENT` | no | Which agent to target. Defaults to `openclaw/default` |
 | `OPENCLAW_SESSION_KEY` | no | Recorded in bridge logs only. OpenClaw's webhook route decides the real session |
 | `BRIDGE_API_KEY` | strongly | Shared secret callers must present **to** the bridge. See below |
 | `TS_AUTHKEY` | cloud only | Tailscale key for the cloud sidecar. Not read by the bridge itself |
@@ -80,11 +81,12 @@ Then open it and set the values below. `.env` is gitignored — never commit it.
 This trips people up, because both are "the secret":
 
 ```text
-Custom GPT --[ BRIDGE_API_KEY ]--> bridge --[ OPENCLAW_WEBHOOK_SECRET ]--> OpenClaw
+Custom GPT --[ BRIDGE_API_KEY ]--> bridge --[ OPENCLAW_GATEWAY_TOKEN ]--> OpenClaw
 ```
 
 - `BRIDGE_API_KEY` protects **the bridge** from strangers who find its URL.
-- `OPENCLAW_WEBHOOK_SECRET` proves the bridge's identity **to OpenClaw**.
+- `OPENCLAW_GATEWAY_TOKEN` is how the bridge authenticates **to OpenClaw**, and it is
+  full operator access. It must never be handed to a caller.
 
 They should be different values. Reusing one for both means a leak of either compromises
 both hops.
@@ -107,17 +109,17 @@ The same value goes in the Custom GPT Action as an `api_key` header — see
 
 ### If OpenClaw is private
 
-Point `OPENCLAW_WEBHOOK_URL` at the **Tailscale hostname** or IP, never `localhost` — Go
+Point `OPENCLAW_GATEWAY_URL` at the **Tailscale hostname** or IP, never `localhost` — Go
 never sends loopback addresses through a proxy, so the bridge would silently skip Tailscale:
 
 ```text
-http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
+http://openclaw-gateway.tailnet:18789
 ```
 
 Behind `tailscale serve` it is **https with no port**. Check with `tailscale serve status`:
 
 ```text
-https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+https://your-host.your-tailnet.ts.net
 ```
 
 ### Loading it {#loading-env}
@@ -133,8 +135,8 @@ Then check nothing important is empty. This fails loudly now rather than produci
 container that starts and misbehaves later:
 
 ```bash
-: "${OPENCLAW_WEBHOOK_URL:?set it in .env}"
-: "${OPENCLAW_WEBHOOK_SECRET:?set it in .env}"
+: "${OPENCLAW_GATEWAY_URL:?set it in .env}"
+: "${OPENCLAW_GATEWAY_TOKEN:?set it in .env}"
 : "${BRIDGE_API_KEY:?set it in .env}"
 echo "core values present"
 ```
@@ -143,17 +145,19 @@ Deploying to a cloud platform? Add `: "${TS_AUTHKEY:?set it in .env}"` — an un
 Tailscale key produces a container that starts but never joins your tailnet, which only
 surfaces later as `/readyz` failing.
 
-### Confirming the webhook secret matches
+### Confirming the gateway token matches
 
 A mismatch here is the most common cause of a healthy-looking deployment that returns
 `401`. Compare hashes rather than reading the values:
 
 ```bash
-printf '%s' "$OPENCLAW_WEBHOOK_SECRET" | shasum -a 256 | cut -c1-16
-grep '^OPENCLAW_WEBHOOK_SECRET=' ~/.openclaw/.env | cut -d= -f2- | tr -d '\n' | shasum -a 256 | cut -c1-16
+printf '%s' "$OPENCLAW_GATEWAY_TOKEN" | shasum -a 256 | cut -c1-16
+python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['gateway']['auth']['token'])" \
+  | tr -d '\n' | shasum -a 256 | cut -c1-16
 ```
 
-Use `cut -d= -f2-`, not `-f2`, or a secret containing `=` is silently truncated.
+The two hashes must match. Use `cut -d= -f2-`, not `-f2`, anywhere you read a secret out of
+a `.env` file, or a value containing `=` is silently truncated.
 
 ---
 
@@ -217,7 +221,8 @@ Send a sample request to the bridge:
 ```bash
 curl -X POST http://localhost:8080/v1/openclaw \
   -H 'content-type: application/json' \
-  --data '{"action":"create_flow","goal":"test"}'
+  -H "api_key: $BRIDGE_API_KEY" \
+  --data '{"action":"ask","message":"Confirm you are reachable."}'
 ```
 
 If you want to use a file instead, replace the inline JSON with your own payload file.
@@ -275,7 +280,7 @@ If OpenClaw is private, use the Tailscale-backed manifest.
 ## 10. Add the GPT Action
 
 > For the full version — schema import, the `servers:` URL, endpoint exposure, and the
-> instructions the model needs to handle `expectedRevision` — see
+> instructions the model needs for the async loop — see
 > [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
 
 1. Open the Custom GPT builder in ChatGPT.
@@ -318,7 +323,7 @@ If the test does not work, check these things first:
 - the bridge URL is correct
 - HTTPS works
 - the OpenAPI file was imported correctly
-- `OPENCLAW_WEBHOOK_SECRET` matches on both sides
+- `OPENCLAW_GATEWAY_TOKEN` matches `gateway.auth.token` in OpenClaw
 - the bridge can reach OpenClaw through Tailscale
 
 ---
@@ -352,7 +357,7 @@ Once it is set up, the flow is simple:
 
 - [ ] Code is in the right folder
 - [ ] `.env` is created
-- [ ] `OPENCLAW_WEBHOOK_URL` is set correctly
+- [ ] `OPENCLAW_GATEWAY_URL` is set correctly
 - [ ] `go test ./...` passes, or Docker works
 - [ ] bridge starts with `go run .` or Docker
 - [ ] `healthz` and `readyz` respond

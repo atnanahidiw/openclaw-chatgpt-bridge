@@ -4,9 +4,9 @@ title: Use cases
 
 # Use cases
 
-This bridge connects a GPT Action to an OpenClaw webhook.
+This bridge connects a GPT Action to an OpenClaw agent.
 
-It is useful when a user wants to describe work in ChatGPT, then hand that work to an agent that can operate in a controlled environment. The work can be technical, operational, administrative, research-heavy, or document-heavy.
+It is useful when a user wants to describe work in ChatGPT, then hand that work to an agent that can actually carry it out — reading files, running commands, and using its installed skills on a machine you control. The work can be technical, operational, administrative, research-heavy, or document-heavy.
 
 The bridge is not limited to coding. Coding is only one example. The main value is delegation: ChatGPT becomes the place where the user explains the task, reviews progress, asks follow-up questions, and receives the final result.
 
@@ -30,24 +30,25 @@ This work usually involves several steps:
 
 ### How the bridge helps
 
-The user can ask ChatGPT to start an OpenClaw flow, then OpenClaw can work inside the repository or server environment.
+The user asks ChatGPT to delegate the work, and OpenClaw carries it out inside the repository or server environment.
 
 Example:
 
 ~~~json
 {
-  "action": "create_flow",
-  "goal": "Review this Go bridge service, harden it for production, run tests, and summarize the risks."
+  "action": "ask_async",
+  "message": "Review this Go bridge service, harden it for production, run tests, and summarize the risks.",
+  "user": "conv:repo-hardening"
 }
 ~~~
 
-Follow-up:
+Follow-up, reusing the same `user` so OpenClaw keeps the context:
 
 ~~~json
 {
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Add X-Request-ID forwarding, update tests, and verify go test ./... passes."
+  "action": "ask_async",
+  "message": "Add X-Request-ID forwarding, update tests, and verify go test ./... passes.",
+  "user": "conv:repo-hardening"
 }
 ~~~
 
@@ -87,18 +88,19 @@ Example:
 
 ~~~json
 {
-  "action": "create_flow",
-  "goal": "Review the grant requirements and our project notes, then prepare a submission checklist and proposal outline."
+  "action": "ask_async",
+  "message": "Review the grant requirements and our project notes, then prepare a submission checklist and proposal outline.",
+  "user": "conv:grant-prep"
 }
 ~~~
 
-Follow-up:
+Follow-up, reusing the same `user` so OpenClaw keeps the context:
 
 ~~~json
 {
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Map each grant requirement to existing evidence, missing evidence, and suggested next action."
+  "action": "ask_async",
+  "message": "Map each grant requirement to existing evidence, missing evidence, and suggested next action.",
+  "user": "conv:grant-prep"
 }
 ~~~
 
@@ -137,18 +139,19 @@ Example:
 
 ~~~json
 {
-  "action": "create_flow",
-  "goal": "Review the current project docs and produce a realistic implementation plan for the next release."
+  "action": "ask_async",
+  "message": "Review the current project docs and produce a realistic implementation plan for the next release.",
+  "user": "conv:roadmap"
 }
 ~~~
 
-Follow-up:
+Follow-up, reusing the same `user` so OpenClaw keeps the context:
 
 ~~~json
 {
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Separate the plan into must-have, should-have, and later items. Highlight anything blocked by missing information."
+  "action": "ask_async",
+  "message": "Separate the plan into must-have, should-have, and later items. Highlight anything blocked by missing information.",
+  "user": "conv:roadmap"
 }
 ~~~
 
@@ -186,18 +189,19 @@ Example:
 
 ~~~json
 {
-  "action": "create_flow",
-  "goal": "Review the onboarding checklist and identify missing steps for a new contractor setup."
+  "action": "ask_async",
+  "message": "Review the onboarding checklist and identify missing steps for a new contractor setup.",
+  "user": "conv:onboarding"
 }
 ~~~
 
-Follow-up:
+Follow-up, reusing the same `user` so OpenClaw keeps the context:
 
 ~~~json
 {
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Draft an updated checklist with owner, input, output, and verification step for each item."
+  "action": "ask_async",
+  "message": "Draft an updated checklist with owner, input, output, and verification step for each item.",
+  "user": "conv:onboarding"
 }
 ~~~
 
@@ -235,18 +239,19 @@ Example:
 
 ~~~json
 {
-  "action": "create_flow",
-  "goal": "Review recent customer support notes and identify repeated issues that should become documentation or product fixes."
+  "action": "ask_async",
+  "message": "Review recent customer support notes and identify repeated issues that should become documentation or product fixes.",
+  "user": "conv:support-themes"
 }
 ~~~
 
-Follow-up:
+Follow-up, reusing the same `user` so OpenClaw keeps the context:
 
 ~~~json
 {
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Group the issues by cause, affected user type, suggested reply, and whether engineering follow-up is needed."
+  "action": "ask_async",
+  "message": "Group the issues by cause, affected user type, suggested reply, and whether engineering follow-up is needed.",
+  "user": "conv:support-themes"
 }
 ~~~
 
@@ -299,54 +304,68 @@ Poor fit examples:
 
 ## Common interaction pattern
 
-Most use cases follow the same flow.
+Most use cases follow the same shape. Real work takes minutes, so `ask_async` is the
+normal choice and `ask` is reserved for quick questions.
 
-### Start work
-
-~~~json
-{
-  "action": "create_flow",
-  "goal": "Review the current docs and implementation, then identify what needs to be fixed before release."
-}
-~~~
-
-### Continue work
+### Start the work
 
 ~~~json
 {
-  "action": "run_task",
-  "flowId": "flow_123",
-  "task": "Apply the highest-priority fixes and run the available checks."
+  "action": "ask_async",
+  "message": "Review the current docs and implementation, then identify what needs to be fixed before release.",
+  "user": "conv:release-check"
 }
 ~~~
 
-### Check status
+The response returns a `jobId` immediately:
 
 ~~~json
 {
-  "action": "get_flow",
-  "flowId": "flow_123"
+  "ok": true,
+  "jobId": "a15b1d0cac4056c23c415f65",
+  "status": "running"
 }
 ~~~
 
-### Resume work
+### Collect the result
 
 ~~~json
 {
-  "action": "resume_flow",
-  "flowId": "flow_123",
-  "task": "Continue from the last completed step and update the documentation."
+  "action": "get_result",
+  "jobId": "a15b1d0cac4056c23c415f65"
 }
 ~~~
 
-### Finish work
+Poll until `status` is `done`, then read `reply`. While it is `running`, wait several
+seconds between polls rather than hammering it.
+
+### Continue the work
+
+Send another instruction with the **same** `user` value. OpenClaw keeps the session, so it
+still knows what it just did:
 
 ~~~json
 {
-  "action": "finish_flow",
-  "flowId": "flow_123"
+  "action": "ask_async",
+  "message": "Apply the highest-priority fixes and run the available checks.",
+  "user": "conv:release-check"
 }
 ~~~
+
+### Ask something quick
+
+For a question that needs no file reading or commands, `ask` waits and returns the answer
+directly. Expect roughly 30 seconds even so — a real agent turn is starting:
+
+~~~json
+{
+  "action": "ask",
+  "message": "In one sentence, what is the current state of the release checklist?"
+}
+~~~
+
+There is nothing to close. Each instruction is a turn; the session ends when you stop using
+that `user` value.
 
 ## Summary
 

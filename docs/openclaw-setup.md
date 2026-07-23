@@ -4,58 +4,60 @@ title: OpenClaw setup and testing
 
 # OpenClaw setup and testing
 
-This page covers the **OpenClaw side**. Every other guide in these docs deploys the
-bridge; none of them work until OpenClaw is configured to accept the bridge's requests.
+This page covers the **OpenClaw side**. Every other guide deploys the bridge; none of them
+work until OpenClaw exposes an endpoint the bridge can call.
 
 Do this page **first**. You cannot finish the bridge setup without the two values it
-produces: the webhook URL and the shared secret.
+produces: the Gateway URL and its auth token.
 
 ## One-sentence explanation
 
-**OpenClaw's bundled `webhooks` plugin adds an authenticated HTTP route that turns
-incoming JSON into TaskFlows, and the bridge is what posts to it.**
+**OpenClaw's Gateway can serve an OpenAI-compatible `/v1/chat/completions` endpoint that
+runs a real agent turn, and the bridge is what calls it.**
 
 ## What you are building
 
 ```text
-ChatGPT -> bridge -> POST /plugins/webhooks/gpt -> OpenClaw TaskFlow
-                     └── the route you create on this page
+ChatGPT -> bridge -> POST /v1/chat/completions -> a real OpenClaw agent turn
+                     └── the endpoint you enable on this page
 ```
+
+The agent that answers has its normal capabilities: shell commands, file access, and your
+installed skills. It executes work rather than only describing it.
+
+<div class="danger" markdown="1">
+<div markdown="1">
+<span class="danger-title">This endpoint is full operator access</span>
+
+OpenClaw's own documentation is explicit: a valid token here restores the complete operator
+scope set and runs turns with owner semantics. Anyone who can call it can do anything the
+target agent can do, including running commands on this machine.
+
+**Keep it on loopback or a private tailnet. Never expose it to the public internet.** The
+bridge is what makes it safe to use from ChatGPT: it holds the Gateway token privately and
+re-authenticates callers with its own separate key.
+</div>
+</div>
 
 ## Before you start
 
 You need:
 
-- OpenClaw installed and its Gateway running
+- OpenClaw installed, with its Gateway running
 - access to edit `~/.openclaw/openclaw.json`
 - the ability to restart the Gateway
 
-The plugin runs **inside the Gateway process**. If your Gateway runs on another machine,
-do all of this on that machine.
-
 ---
 
-## Step 1 — Find your config and confirm the Gateway is alive
+## Step 1 — Confirm the Gateway is alive
 
-The config lives at:
-
-```bash
-~/.openclaw/openclaw.json
-```
-
-Check the Gateway answers. The default port is `18789`:
+The config lives at `~/.openclaw/openclaw.json`. The Gateway's default port is `18789`:
 
 ```bash
 curl http://127.0.0.1:18789/health
 ```
 
-You should see:
-
-```json
-{"ok":true,"status":"live"}
-```
-
-If that fails, start the Gateway before going further.
+Expect `{"ok":true,"status":"live"}`. If that fails, start the Gateway before going further.
 
 ### Back up the config first
 
@@ -67,208 +69,122 @@ cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak.$(date +%Y%m%d-%H%M%S
 
 ---
 
-## Step 2 — Enable the webhooks plugin
+## Step 2 — Enable the chat completions endpoint
 
-Open `~/.openclaw/openclaw.json` and find the `plugins` section.
-
-Two edits are needed. **Both**, not one.
-
-### 2a. Allowlist the plugin
-
-Add `"webhooks"` to `plugins.allow`:
+**It is disabled by default.** Add the `http` block inside `gateway`:
 
 ```json
-"plugins": {
-  "enabled": true,
-  "allow": [
-    "browser",
-    "workboard",
-    "webhooks"
-  ]
-}
-```
-
-### 2b. Add the route
-
-Add a `webhooks` entry under `plugins.entries`:
-
-```json
-"webhooks": {
-  "enabled": true,
-  "config": {
-    "routes": {
-      "gpt": {
-        "path": "/plugins/webhooks/gpt",
-        "sessionKey": "agent:main:chatgpt",
-        "secret": {
-          "source": "env",
-          "provider": "default",
-          "id": "OPENCLAW_WEBHOOK_SECRET"
-        },
-        "controllerId": "webhooks/gpt",
-        "description": "ChatGPT bridge TaskFlow ingress"
+"gateway": {
+  "port": 18789,
+  "bind": "loopback",
+  "http": {
+    "endpoints": {
+      "chatCompletions": {
+        "enabled": true
       }
     }
   }
 }
 ```
 
-### What each field means
-
-| Field | Required | Meaning |
-|---|---|---|
-| `path` | no | The URL to POST to. Defaults to `/plugins/webhooks/<routeId>`, so `gpt` gives you `/plugins/webhooks/gpt` — which is the bridge's default |
-| `sessionKey` | **yes** | Which OpenClaw session owns the TaskFlows this route creates. See Step 3 |
-| `secret` | **yes** | The shared secret callers must present. See Step 4 |
-| `controllerId` | no | Label on the created flows. Defaults to `webhooks/<routeId>` |
-| `description` | no | Operator note, shown nowhere important |
-
-The route id (`gpt` above) is the key in the `routes` object. Name it whatever you like,
-but if you change it, either set `path` explicitly or update the bridge's
-`OPENCLAW_WEBHOOK_URL` to match.
+Leave `bind` as `loopback`. Step 5 publishes it to your tailnet without opening it to the
+internet.
 
 ---
 
-## Step 3 — Choose the session key
+## Step 3 — Find the Gateway token
 
-This is the decision most worth thinking about, because **the caller cannot override it**.
-The route is permanently bound to whatever session you configure here. The bridge sends
-no session information at all — a `sessionKey` in the request body is rejected outright.
+The bridge authenticates with the token already in your config:
+
+```bash
+python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['gateway']['auth']['token'])"
+```
+
+That value becomes `OPENCLAW_GATEWAY_TOKEN` in the bridge's `.env`.
+
+If `gateway.auth.mode` is `password` rather than `token`, use the password instead — the
+endpoint accepts either as `Authorization: Bearer <value>`.
+
+**This token is the sensitive one.** It is not a webhook secret scoped to one route; it is
+operator access to the whole Gateway. It belongs on the bridge and nowhere else.
+
+---
+
+## Step 4 — Choose the session
+
+Every turn runs in an OpenClaw session. The bridge sends the one you configure as
+`OPENCLAW_SESSION_KEY`, via the `x-openclaw-session-key` header.
 
 | Choice | Effect |
 |---|---|
-| `agent:main:main` | ChatGPT-created flows land in your main agent session, so they appear in your normal conversation on WhatsApp, Telegram, and so on |
-| `agent:main:chatgpt` | ChatGPT-created flows live in their own session, separate from your day-to-day conversation |
+| `agent:main:main` | ChatGPT's work lands in your main agent session, mixed into your normal conversation |
+| `agent:main:chatgpt` | ChatGPT's work lives in its own session, separate from your day-to-day chat |
 
-**Prefer a dedicated session.** The plugin's own security guidance is to bind routes to the
-narrowest session that fits, because the route can inspect and mutate every TaskFlow owned
-by that session. A separate session limits what a leaked secret can reach.
+**Prefer a dedicated session.** It keeps ChatGPT's transcript out of your main context, and
+limits what a leaked bridge key can reach.
 
-The session does not need to exist beforehand. OpenClaw binds it on demand.
-
-Note that flows are owned per session, so **changing this later hides earlier flows** from
-the route. A `get_flow` for a flow created under the old session returns `flow: null`.
+The session does not need to exist beforehand — OpenClaw creates it on first use. Reserved
+namespaces are rejected: `subagent:`, `cron:`, `acp:`.
 
 ---
 
-## Step 4 — Set the shared secret
+## Step 5 — Make the Gateway reachable by the bridge
 
-The plugin accepts either a plain string or a SecretRef. Prefer the reference: a secret
-written directly into `openclaw.json` is easy to leak when sharing config or backups.
-
-Generate a strong secret and store it in OpenClaw's environment file:
-
-```bash
-printf 'OPENCLAW_WEBHOOK_SECRET=%s\n' "$(openssl rand -hex 32)" >> ~/.openclaw/.env
-```
-
-The route config above already points at it:
-
-```json
-"secret": { "source": "env", "provider": "default", "id": "OPENCLAW_WEBHOOK_SECRET" }
-```
-
-Read the value back — you need the identical string on the bridge side:
-
-```bash
-grep '^OPENCLAW_WEBHOOK_SECRET=' ~/.openclaw/.env
-```
-
-### The failure mode to know about
-
-If a secret-backed route **cannot resolve its secret at startup, the plugin skips that
-route entirely** and logs a warning. It does not expose a broken endpoint.
-
-That means a missing environment variable does not look like an auth error. It looks like
-the route does not exist — a `404`. Step 7 shows how to tell those apart.
-
----
-
-## Step 5 — Make OpenClaw reachable by the bridge
-
-The bridge runs somewhere else, so it has to be able to reach the Gateway.
-
-Check what the Gateway currently binds:
+The bridge runs elsewhere, so it needs a path in. Check what the Gateway binds:
 
 ```bash
 lsof -nP -iTCP:18789 -sTCP:LISTEN
 ```
 
-If you see `127.0.0.1:18789`, the Gateway is loopback-only and **nothing outside that
-machine can reach it**, including a bridge on your tailnet.
+`127.0.0.1:18789` means loopback only — correct, and not reachable from anywhere else yet.
 
 ### Recommended: put Tailscale in front
 
 `tailscale serve` publishes a local port across your tailnet over HTTPS, without changing
-how OpenClaw binds and without exposing anything to the public internet.
-
-Check whether it is already configured:
+how the Gateway binds and without exposing anything publicly:
 
 ```bash
 tailscale serve status
 ```
 
-A working setup looks like this:
+A working setup looks like:
 
 ```text
 https://your-host.your-tailnet.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:18789
 ```
 
-Your webhook URL is then, with **no port number** and **https**:
+Your `OPENCLAW_GATEWAY_URL` is then, with **no port** and **https**:
 
 ```text
-https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+https://your-host.your-tailnet.ts.net
 ```
+
+The bridge appends `/v1/chat/completions` itself, so do not include a path.
 
 Three consequences worth knowing:
 
 - Plain HTTP on port 80 does **not** answer. Only HTTPS.
-- The bridge's request travels through `HTTPS_PROXY` as a `CONNECT` tunnel, not
-  `HTTP_PROXY`. Set both when running Tailscale in userspace mode.
+- The bridge's request travels through `HTTPS_PROXY` as a `CONNECT` tunnel when running
+  Tailscale in userspace mode, not `HTTP_PROXY`. Set both.
 - The bridge container needs a CA trust store to verify the `*.ts.net` certificate. The
   repository `Dockerfile` installs `ca-certificates` for this reason.
-
-### Alternative: bind the tailnet interface directly
-
-You can instead have the Gateway listen beyond loopback via `gateway.bind` in
-`openclaw.json`. Then the URL keeps the port and uses plain HTTP:
-
-```text
-http://your-host.your-tailnet.ts.net:18789/plugins/webhooks/gpt
-```
-
-Only do this on a private interface. Never bind the Gateway to a public address.
 
 ---
 
 ## Step 6 — Restart the Gateway
 
-Config changes to routes are picked up, but **environment variables are not**. A secret you
-just added to `~/.openclaw/.env` is invisible to the already-running process, so the route
-will fail authentication until you restart.
-
-Restart the Gateway now, however you normally do.
-
-You can confirm the process actually has the variable:
-
-```bash
-ps eww $(pgrep -f openclaw | head -1) | tr ' ' '\n' | grep -c '^OPENCLAW_WEBHOOK_SECRET='
-```
-
-`1` means it is loaded. `0` means the restart did not pick up the file.
+Config changes to endpoints need a restart. Environment variables are not reloaded either,
+so if you changed anything in `~/.openclaw/.env` this is when it takes effect.
 
 ---
 
 ## Step 7 — Test it
 
-Work down this ladder. Each rung isolates one failure, so when something breaks you know
-exactly which layer to fix.
-
-Set up two shell variables first:
+Work down this ladder. Each rung isolates one failure.
 
 ```bash
-SECRET=$(grep '^OPENCLAW_WEBHOOK_SECRET=' ~/.openclaw/.env | cut -d= -f2)
+TOKEN=$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['gateway']['auth']['token'])")
 BASE=https://your-host.your-tailnet.ts.net
 ```
 
@@ -278,114 +194,95 @@ BASE=https://your-host.your-tailnet.ts.net
 curl -s "$BASE/health"
 ```
 
-Expect `{"ok":true,"status":"live"}`. If this fails, nothing below will work.
+Expect `{"ok":true,"status":"live"}`.
 
-### 7b. Did your route register?
+### 7b. Did the endpoint actually enable? Check the **content type**
 
-This is the test people skip, and it is the one that matters most. Compare your path
-against a path you know is fake:
+This is the test people get wrong, and it is worth doing carefully.
 
 ```bash
-curl -s -o /dev/null -w "yours: %{http_code}\n" -X POST "$BASE/plugins/webhooks/gpt" \
-  -H 'content-type: application/json' -d '{}'
-curl -s -o /dev/null -w "fake:  %{http_code}\n" -X POST "$BASE/plugins/webhooks/not-real" \
-  -H 'content-type: application/json' -d '{}'
+curl -s -o /dev/null -w "%{http_code} %{content_type}\n" \
+  -H "Authorization: Bearer $TOKEN" "$BASE/v1/models"
 ```
 
 | Result | Meaning |
 |---|---|
-| yours `401`, fake `404` | **Correct.** Your route exists and is demanding authentication |
-| yours `404`, fake `404` | The route did not register. Either you did not restart, or the secret failed to resolve and the plugin skipped it |
+| `200 application/json` | **Correct.** The API is serving |
+| `200 text/html` | **Not enabled.** That is the Control UI answering with its single-page app, which returns `200` for almost any path |
+| `404` | Not enabled, and no SPA fallback on this path |
 
-Without the fake-path comparison a `401` is ambiguous, because you cannot tell a real
-route from a generic guard.
+A bare status code tells you nothing here. The Control UI happily returns `200 text/html`
+for paths that do not exist, so always check the content type.
 
-### 7c. Does the secret work?
-
-```bash
-curl -s -X POST "$BASE/plugins/webhooks/gpt" -H 'content-type: application/json' \
-  -H "Authorization: Bearer $SECRET" -d '{"action":"get_flow","flowId":"probe"}'
-```
-
-Expect:
-
-```json
-{"ok":true,"routeId":"gpt","result":{"flow":null}}
-```
-
-`flow: null` is success — you asked for a flow that does not exist, and the route answered.
-A `401` here means the running process has a different secret than your `.env` file.
-
-The plugin accepts either header, and the bridge sends both:
+Confirm with a path that should never exist:
 
 ```bash
--H "Authorization: Bearer $SECRET"
--H "x-openclaw-webhook-secret: $SECRET"
+curl -s -o /dev/null -w "%{http_code} %{content_type}\n" \
+  -X POST -H "Authorization: Bearer $TOKEN" "$BASE/v1/definitely-not-real"
 ```
 
-### 7d. Walk a real flow end to end
+That should be `404 text/plain`.
 
-This exercises every action the bridge uses. Note how `expectedRevision` is read from one
-call and passed to the next.
+### 7c. List the agent targets
 
 ```bash
-post() { curl -s -X POST "$BASE/plugins/webhooks/gpt" \
-  -H 'content-type: application/json' -H "Authorization: Bearer $SECRET" -d "$1"; }
-
-# 1. create — note the flowId and revision in the response
-post '{"action":"create_flow","goal":"webhook smoke test","notifyPolicy":"done_only"}'
-
-# 2. read it back
-post '{"action":"get_flow","flowId":"PASTE_FLOW_ID"}'
-
-# 3. move it, quoting the revision you just read
-post '{"action":"resume_flow","flowId":"PASTE_FLOW_ID","expectedRevision":0,"status":"running"}'
-
-# 4. close it, quoting the revision again (it changed in step 3)
-post '{"action":"finish_flow","flowId":"PASTE_FLOW_ID","expectedRevision":1}'
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/v1/models"
 ```
 
-Clean up after yourself: finish any flow you create, or it stays open in that session.
+You should see ids like `openclaw`, `openclaw/default`, and `openclaw/<agentId>`. One of
+these becomes `OPENCLAW_AGENT` on the bridge; `openclaw/default` is a safe choice.
 
-### 7e. Check `run_task` without actually running anything
-
-`run_task` spawns real work, which you may not want during a smoke test. Send it with a
-deliberately fake `flowId` — that validates the payload shape without executing:
+### 7d. Run a real turn
 
 ```bash
-post '{"action":"run_task","flowId":"no-such-flow","task":"probe","runtime":"subagent"}'
+curl -s "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'x-openclaw-session-key: agent:main:chatgpt' \
+  -d '{"model":"openclaw/default","messages":[{"role":"user","content":"Reply with exactly one word: pong"}]}'
 ```
 
-| Response `code` | Meaning |
-|---|---|
-| `not_found` | **Good.** The payload passed validation and only the flow lookup failed |
-| `invalid_request` | Your payload shape is wrong — read the `error` text |
+Expect a standard OpenAI response with `choices[0].message.content` set to `pong`.
+
+**Expect this to take several seconds even for a trivial question** — a real agent turn is
+starting, with the agent's full system context. Around 7 seconds locally is normal.
+
+### 7e. Prove tools work
+
+The point of this endpoint is that the agent *acts*. Ask for something only a tool can
+answer:
+
+```bash
+curl -s "$BASE/v1/chat/completions" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"openclaw/default","messages":[{"role":"user","content":"Run the shell command `uname -a` and paste the exact output. Do not guess."}]}'
+```
+
+If the output matches your real machine, tools are working. If it looks plausible but
+generic, the agent guessed — check that its tool policy allows shell access.
 
 ---
 
-## The action contract
+## Step 8 — Turn off the webhooks plugin, if you enabled it
 
-Every action schema is **strict**: a key the action does not declare fails the whole
-request with `400 Unrecognized keys`. This catches people out, because sending a *helpful
-extra field* breaks the call rather than being ignored.
+Earlier versions of this bridge used OpenClaw's `webhooks` plugin. **It cannot execute
+anything** — `run_task` there only records a TaskFlow row for external automation that does
+its own work — so the bridge no longer uses it.
 
-| Action | Required | Also accepted |
-|---|---|---|
-| `create_flow` | `goal` | `status` (`queued`/`running`/`waiting`/`blocked`), `notifyPolicy`, `controllerId`, `currentStep`, `stateJson`, `waitJson` |
-| `run_task` | `flowId`, `runtime` (`subagent`/`acp`), `task` | `childSessionKey`, `label`, `status` (`queued`/`running`), `notifyPolicy`, and several ids |
-| `get_flow` | `flowId` | nothing at all |
-| `resume_flow` | `flowId`, `expectedRevision` | `status` (`queued`/`running`), `currentStep`, `stateJson` |
-| `finish_flow` | `flowId`, `expectedRevision` | `stateJson` |
+If you enabled it for an older version, disable it now rather than leaving an authenticated
+surface nobody tests:
 
-Notes that are easy to get wrong:
+```json
+"plugins": {
+  "entries": {
+    "webhooks": { "enabled": false }
+  }
+}
+```
 
-- **`notifyPolicy` is `done_only`, `state_changes`, or `silent`.** There is no `all_events`.
-- **`notifyPolicy` is only accepted by `create_flow` and `run_task`.** Sending it to the
-  other three fails the request.
-- **`sessionKey` and `metadata` are accepted by no action.** The bridge strips both, and
-  re-sends `metadata` as `stateJson` where that is allowed.
-- **`expectedRevision` is optimistic concurrency.** Read it from `get_flow` immediately
-  before writing, and expect it to change after every mutation.
+Remove `"webhooks"` from `plugins.allow` too, and drop `OPENCLAW_WEBHOOK_SECRET` from
+`~/.openclaw/.env`. Restart afterwards.
 
 ---
 
@@ -393,69 +290,49 @@ Notes that are easy to get wrong:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `404` on your route, `404` on a fake path too | Route never registered | Restart the Gateway. If still 404, the secret failed to resolve — check the log for a `[webhooks]` warning |
-| `401` with the right secret | The running process has a different value | The Gateway was started before you wrote the `.env` entry. Restart it |
-| `400 Unrecognized keys: "..."` | Extra fields in the body | Remove them. See the contract table above |
-| `x509: certificate signed by unknown authority` | The caller has no CA trust store and your URL is `https` | Install `ca-certificates` in the calling container |
-| Bridge reaches nothing, no error | `OPENCLAW_WEBHOOK_URL` points at `localhost` | Go never proxies loopback addresses. Use the tailnet hostname |
-| `get_flow` returns `flow: null` for a flow you know exists | It belongs to a different session | The route's `sessionKey` changed, or another route created it |
+| `/v1/chat/completions` returns `404` | Endpoint not enabled, or Gateway not restarted | Re-check Step 2, then restart |
+| `/v1/models` returns `200 text/html` | You are hitting the Control UI, not the API | Same as above. Judge by content type, never by status |
+| `401` from the Gateway | Token mismatch | Compare against `gateway.auth.token`. If `auth.mode` is `password`, use the password |
+| Turn returns a plausible but wrong answer | The agent guessed instead of using tools | Check the agent's tool policy; ask again with "do not guess" |
+| Bridge reports `502` | Gateway unreachable from the bridge | Confirm `tailscale serve status`, and that this machine is awake and on the tailnet |
+| Bridge reports `504` | The turn outlived the bridge's timeout | Normal for real work. Use the bridge's `ask_async` action |
+| Everything works locally, fails from the bridge | `OPENCLAW_GATEWAY_URL` points at `localhost` | Go never proxies loopback addresses. Use the tailnet hostname |
 
-Read the Gateway log after any restart. The plugin logs one line per route:
-
-```text
-[webhooks] registered route gpt on /plugins/webhooks/gpt for session agent:main:chatgpt
-```
-
-That line is logged at **info** level. If your config sets `logging.level` to `warn` — a
-common default — you will not see it even when the route registered correctly. Either
-lower the level temporarily, or use the `401`-versus-`404` check in Step 7b instead, which
-does not depend on logging at all.
-
-### Confirming which session actually owns a flow
-
-Webhook responses deliberately scrub owner and session metadata, so you cannot read
-ownership back through the API. If you need to prove a `sessionKey` change took effect,
-query the state database directly:
-
-```bash
-sqlite3 "file:$HOME/.openclaw/state/openclaw.sqlite?mode=ro" \
-  "SELECT owner_key, count(*) FROM flow_runs WHERE controller_id='webhooks/gpt' GROUP BY owner_key;"
-```
-
-Flows created before the change keep their old `owner_key`, which is why they stop being
-visible to the route.
+Read the Gateway log after a restart. Note that route registration and similar messages are
+logged at **info**; if `logging.level` is `warn` you will not see them, so prefer the
+content-type test above over log-reading.
 
 ---
 
 ## Security notes
 
-- Use a **unique secret per route**, and prefer a SecretRef over an inline string.
-- Bind each route to the **narrowest session** that fits, because the route can inspect and
-  mutate every TaskFlow owned by that session.
-- Expose only the specific webhook path you need.
-- Keep the Gateway off public interfaces. Reach it over a tailnet instead.
-- The plugin already applies shared-secret auth, body size and timeout guards, fixed-window
-  rate limiting, and in-flight request limits.
+- The Gateway token is **operator access**, not a scoped webhook secret. It belongs on the
+  bridge only, never in a client.
+- Keep `bind` on `loopback` and reach the Gateway over a tailnet.
+- Bind the bridge to a **dedicated session** so a leaked bridge key cannot touch your main
+  agent's work.
+- The bridge must set its own `BRIDGE_API_KEY`. Without it, anyone who finds the bridge URL
+  inherits everything above.
 
 ---
 
 ## Checklist
 
 - [ ] Config backed up
-- [ ] `webhooks` added to `plugins.allow`
-- [ ] Route added under `plugins.entries.webhooks.config.routes`
-- [ ] `sessionKey` chosen deliberately
-- [ ] Secret generated and stored in `~/.openclaw/.env`
-- [ ] OpenClaw reachable from where the bridge will run
-- [ ] Gateway restarted **after** writing the secret
-- [ ] Your path returns `401` while a fake path returns `404`
-- [ ] Correct secret returns `{"ok":true,...}`
-- [ ] A full create → get → resume → finish cycle succeeds
-- [ ] Webhook URL and secret copied for the bridge's `.env`
+- [ ] `gateway.http.endpoints.chatCompletions.enabled` set to `true`
+- [ ] Gateway restarted
+- [ ] `/v1/models` returns `200` **with `application/json`**
+- [ ] A real turn returns `choices[0].message.content`
+- [ ] A tool-requiring question returns real machine output
+- [ ] Session key chosen deliberately
+- [ ] Gateway reachable from where the bridge will run
+- [ ] Gateway URL and token copied for the bridge's `.env`
+- [ ] Old `webhooks` plugin disabled, if it was ever enabled
 
 ## What next
 
-With the webhook working, set up the bridge:
+With the endpoint working, set up the bridge:
 
 - [Step-by-step setup]({{ '/step-by-step.html' | relative_url }}) for the simplest path
 - [Free deployment options]({{ '/deployment/free-tier.html' | relative_url }}) to host it for nothing
+- [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}) to wire it into ChatGPT
