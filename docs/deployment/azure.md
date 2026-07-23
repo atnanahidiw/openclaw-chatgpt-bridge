@@ -691,8 +691,8 @@ properties:
             value: ":8080"
           - name: OPENCLAW_GATEWAY_URL
             value: "${OPENCLAW_GATEWAY_URL}"
-          - name: OPENCLAW_SESSION_KEY
-            value: "${OPENCLAW_SESSION_KEY}"
+          - name: OPENCLAW_SESSION_PREFIX
+            value: "${OPENCLAW_SESSION_PREFIX}"
           - name: REQUEST_TIMEOUT_MS
             value: "30000"
           - name: TAILSCALE_ENABLED
@@ -785,8 +785,8 @@ properties:
             value: ":8080"
           - name: OPENCLAW_GATEWAY_URL
             value: "${OPENCLAW_GATEWAY_URL}"
-          - name: OPENCLAW_SESSION_KEY
-            value: "${OPENCLAW_SESSION_KEY}"
+          - name: OPENCLAW_SESSION_PREFIX
+            value: "${OPENCLAW_SESSION_PREFIX}"
           - name: REQUEST_TIMEOUT_MS
             value: "30000"
           - name: TAILSCALE_ENABLED
@@ -1031,7 +1031,6 @@ something is broken and you are not sure where to start, read this table first.
 | Image pull fails on a brand new registry | New GitHub packages are **private** by default and Container Apps has no credentials | Set the package public, then verify an anonymous manifest fetch returns `200` |
 | Bridge returns `401` from OpenClaw | The secret changed but a process is still running with the old one | Two restarts are needed and they are independent: restart OpenClaw so it re-reads `.env`, **and** `az containerapp revision restart` so the container re-reads the Azure secret |
 | Secret looks identical but still fails | `cut -d= -f2` truncated the value at an `=` | Use `cut -d= -f2-`, and compare SHA-256 prefixes instead of reading values by eye |
-| `400 Unrecognized keys: "metadata", "sessionKey"` | Running an old bridge build | Upstream schemas are strict. Rebuild from a bridge that emits only the keys each action accepts |
 | Route `404`s even though the config looks right | The secret failed to resolve, so the plugin skipped the route | See [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}) — compare your path against a deliberately fake one |
 | `/readyz` says `tailscale proxy not ready` | The Tailscale sidecar has not joined the tailnet | Check the auth key is ephemeral **and** reusable, and that it has not expired |
 | Everything works, then breaks after an idle period | Cold start | The first request after the app scales to zero has to restart Tailscale too. Retry once; if it matters, set `minReplicas: 1` and leave the free tier |

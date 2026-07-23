@@ -56,7 +56,7 @@ Required fields:
 - `ask` and `ask_async` need `message`
 - `get_result` needs `jobId`
 
-`sessionKey` must not use the reserved namespaces `subagent:`, `cron:`, or `acp:`.
+`customSession` is a plain name — letters, digits, dot, dash, underscore, no colons. The bridge builds the full session key from its own prefix.
 
 ---
 

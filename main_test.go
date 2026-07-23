@@ -17,7 +17,7 @@ func testConfig(gatewayURL string) config {
 		gatewayURL:     strings.TrimRight(gatewayURL, "/"),
 		gatewayToken:   "gateway-token",
 		agentTarget:    "openclaw/default",
-		sessionKey:     "agent:main:chatgpt",
+		sessionPrefix:  "agent:main:chatgpt",
 		bridgeAPIKey:   "bridge-key",
 		requestTimeout: 5 * time.Second,
 		asyncTimeout:   5 * time.Second,
@@ -98,39 +98,77 @@ func TestValidateActions(t *testing.T) {
 	}
 }
 
-// The gateway rejects these namespaces with a 400, so the bridge should catch
-// them first and say why.
-func TestRejectsReservedSessionNamespaces(t *testing.T) {
-	for _, key := range []string{"subagent:worker", "agent:main:cron:nightly", "acp:thing"} {
-		t.Run(key, func(t *testing.T) {
-			result := validateInboundPayload(normalizeInboundPayload(map[string]any{
-				"action": "ask", "message": "hi", "sessionKey": key,
-			}, ""))
-			if result.OK {
-				t.Fatalf("expected %q to be rejected", key)
+// A caller names a session; the bridge decides where it lands.
+func TestSessionNameIsNamespaced(t *testing.T) {
+	cases := []struct {
+		name    string
+		session any
+		want    string
+	}{
+		{"blank uses the prefix alone", nil, "agent:main:chatgpt"},
+		{"empty string uses the prefix alone", "", "agent:main:chatgpt"},
+		{"a name is appended", "research", "agent:main:chatgpt:research"},
+		{"dots dashes underscores allowed", "my_gpt-2.0", "agent:main:chatgpt:my_gpt-2.0"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := map[string]any{"action": "ask", "message": "hi"}
+			if tc.session != nil {
+				raw["customSession"] = tc.session
+			}
+			p := normalizeInboundPayload(raw, "agent:main:chatgpt")
+			if p.SessionKey != tc.want {
+				t.Fatalf("sessionKey = %q, want %q", p.SessionKey, tc.want)
+			}
+			if !validateInboundPayload(p).OK {
+				t.Fatalf("expected %v to be valid", tc.session)
 			}
 		})
 	}
+}
 
-	ok := validateInboundPayload(normalizeInboundPayload(map[string]any{
-		"action": "ask", "message": "hi", "sessionKey": "agent:main:chatgpt",
-	}, ""))
-	if !ok.OK {
-		t.Fatalf("a normal session key should be valid, got %#v", ok.Errors)
+// The prefix is the security boundary: a caller must not be able to climb out
+// of it and reach another agent's session.
+func TestSessionNameCannotEscapeTheNamespace(t *testing.T) {
+	for _, bad := range []string{
+		"agent:main:main", // a full key
+		"../main",         // traversal-ish
+		"a:b",             // any colon at all
+		"subagent:worker", // reserved upstream namespace
+		"cron:nightly",
+		"acp:thing",
+		"has space",
+		"", // handled separately, but must never produce a bare colon
+	} {
+		t.Run(bad, func(t *testing.T) {
+			p := normalizeInboundPayload(map[string]any{
+				"action": "ask", "message": "hi", "customSession": bad,
+			}, "agent:main:chatgpt")
+
+			if bad == "" {
+				if p.SessionKey != "agent:main:chatgpt" {
+					t.Fatalf("empty name should fall back to the prefix, got %q", p.SessionKey)
+				}
+				return
+			}
+			if validateInboundPayload(p).OK {
+				t.Fatalf("expected %q to be rejected, built %q", bad, p.SessionKey)
+			}
+		})
 	}
 }
 
-func TestSessionKeyDefaults(t *testing.T) {
-	p := normalizeInboundPayload(map[string]any{"action": "ask", "message": "hi"}, "agent:main:chatgpt")
-	if p.SessionKey != "agent:main:chatgpt" {
-		t.Fatalf("sessionKey = %q, want the configured default", p.SessionKey)
+func TestPrefixFallsBackWhenUnset(t *testing.T) {
+	p := normalizeInboundPayload(map[string]any{"action": "ask", "message": "hi"}, "")
+	if p.SessionKey != defaultSessionPrefix {
+		t.Fatalf("sessionKey = %q, want %q", p.SessionKey, defaultSessionPrefix)
 	}
-
-	p = normalizeInboundPayload(map[string]any{
-		"action": "ask", "message": "hi", "sessionKey": "agent:main:other",
-	}, "agent:main:chatgpt")
-	if p.SessionKey != "agent:main:other" {
-		t.Fatalf("an explicit sessionKey should win, got %q", p.SessionKey)
+	// A trailing colon in the configured prefix must not double up.
+	p = normalizeInboundPayload(map[string]any{"action": "ask", "message": "hi", "customSession": "x"},
+		"agent:main:chatgpt:")
+	if p.SessionKey != "agent:main:chatgpt:x" {
+		t.Fatalf("sessionKey = %q, want no doubled colon", p.SessionKey)
 	}
 }
 
@@ -139,11 +177,10 @@ func TestSessionKeyDefaults(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAskReturnsTheReply(t *testing.T) {
-	var gotHeader, gotModel, gotContent, gotUser string
+	var gotHeader, gotModel, gotContent string
 	gw := stubGateway(t, "pong", func(r *http.Request, body map[string]any) {
 		gotHeader = r.Header.Get("x-openclaw-session-key")
 		gotModel, _ = body["model"].(string)
-		gotUser, _ = body["user"].(string)
 		if msgs, ok := body["messages"].([]any); ok && len(msgs) > 0 {
 			if m, ok := msgs[0].(map[string]any); ok {
 				gotContent, _ = m["content"].(string)
@@ -156,7 +193,7 @@ func TestAskReturnsTheReply(t *testing.T) {
 	defer gw.Close()
 
 	mux := newMux(testConfig(gw.URL), newJobStore(time.Hour))
-	rec := post(t, mux, `{"action":"ask","message":"ping","user":"conv:42"}`, nil)
+	rec := post(t, mux, `{"action":"ask","message":"ping"}`, nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -173,9 +210,6 @@ func TestAskReturnsTheReply(t *testing.T) {
 	}
 	if gotContent != "ping" {
 		t.Errorf("message content = %q", gotContent)
-	}
-	if gotUser != "conv:42" {
-		t.Errorf("user = %q, want it forwarded for session continuity", gotUser)
 	}
 }
 

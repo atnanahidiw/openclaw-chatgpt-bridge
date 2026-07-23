@@ -196,11 +196,19 @@ THE ASYNC LOOP
 6. status "failed" means read the error field, tell the user plainly, and stop.
    Follow the hint field: if it says the turn will not complete, do not retry.
 
-CONVERSATION CONTINUITY
-Pass the same `user` value on every call in one conversation, so OpenClaw keeps
-context between turns. Invent one stable string at the start of the chat, for
-example "conv:" plus a short random suffix. Change it only when the user asks to
-start fresh.
+WHICH SESSION TO USE
+customSession names the OpenClaw session your work runs in. The schema sets a
+default that is right almost every time, so leave it alone -- send it as-is, or
+omit it and let the default apply.
+
+Only change it when the user wants a separate line of work kept apart from the
+rest, like "keep this one in a scratch session". Then pick a short name such as
+"scratch" or "research", and reuse that same name on every follow-up so the work
+stays together.
+
+A name is a single word: letters, digits, dot, dash, underscore. No colons, no
+spaces. Send a bad one and the bridge answers 400 and tells you the rule; fix it
+and try again.
 
 WRITING GOOD INSTRUCTIONS
 - Be specific about the goal and what "done" looks like.

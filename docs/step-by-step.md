@@ -76,7 +76,7 @@ Then open it and set the values below. `.env` is gitignored — never commit it.
 | `OPENCLAW_GATEWAY_URL` | **yes** | Base URL of the OpenClaw Gateway. The bridge appends `/v1/chat/completions` |
 | `OPENCLAW_GATEWAY_TOKEN` | **yes** | Gateway token, from `gateway.auth.token`. **Full operator access** — it never leaves the bridge |
 | `OPENCLAW_AGENT` | no | Which agent to target. Defaults to `openclaw/default` |
-| `OPENCLAW_SESSION_KEY` | no | Recorded in bridge logs only. OpenClaw's webhook route decides the real session |
+| `OPENCLAW_SESSION_PREFIX` | no | Namespace ChatGPT sessions land in. Defaults to `agent:main:chatgpt`. Callers append a name |
 | `BRIDGE_API_KEY` | strongly | Shared secret callers must present **to** the bridge. See below |
 | `TS_AUTHKEY` | cloud only | Tailscale key for the cloud sidecar. Not read by the bridge itself |
 

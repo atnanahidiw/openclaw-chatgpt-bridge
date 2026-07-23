@@ -89,16 +89,21 @@ Three actions, all thin wrappers over one chat-completions call:
 
 | Action | Required | Optional | Returns |
 | --- | --- | --- | --- |
-| `ask` | `message` | `sessionKey`, `user` | `reply`, synchronously |
-| `ask_async` | `message` | `sessionKey`, `user` | `jobId`, immediately (`202`) |
+| `ask` | `message` | `customSession` | `reply`, synchronously (`200`) |
+| `ask_async` | `message` | `customSession` | `jobId`, immediately (`200`) |
 | `get_result` | `jobId` | — | `status`, plus `reply` or `error` |
 
-`sessionKey` defaults to `OPENCLAW_SESSION_KEY` and is sent as `x-openclaw-session-key`.
-The reserved namespaces `subagent:`, `cron:`, `acp:` are rejected here rather than
-upstream, so the error names the real problem.
+Every success is `200` — including `ask_async`. `202` was correct but ChatGPT Actions
+report it as a `ClientResponseError`, so the code carries `status` in the body instead.
 
-`user` maps to the OpenAI `user` field, which gives the gateway a stable session per
-conversation. Same value across a chat means OpenClaw keeps context.
+`customSession` is a **name**, not a full key. The bridge prepends its own namespace
+(`sessionPrefix`, default `agent:main:chatgpt`) and sends the result as
+`x-openclaw-session-key`. So `customSession: "research"` becomes
+`agent:main:chatgpt:research`; omitting it uses the prefix alone. This is a security
+boundary: the name is validated against `sessionNamePattern` (one path-safe segment, no
+colons), so a caller cannot climb out of the namespace to reach `agent:main:main` or a
+reserved `subagent:`/`cron:`/`acp:` session. `TestSessionNameCannotEscapeTheNamespace`
+pins this.
 
 **Changing the contract means changing three places in the same commit:** the Go
 validation, the OpenAPI schema, and the error-message strings that enumerate valid values
@@ -144,6 +149,9 @@ tell you that a turn takes 30 seconds, or that the endpoint is disabled by defau
 - **Two credentials fail differently.** A bad caller key is `401` (their problem); a bad
   gateway token is `500` (the operator's). Keep that mapping — a GPT should retry neither,
   but the distinction tells a human where to look.
+- **Every success returns 200, never 202.** ChatGPT Actions surface non-200 success codes
+  as a `ClientResponseError`. `ask_async` therefore answers `200` with `status: "running"`
+  in the body. `TestAsyncRoundTrip` asserts the code.
 - **Turns are slow.** Even a trivial question takes seconds; anything touching files takes
   minutes. `ask` exists for convenience, but `ask_async` is the honest default. Do not
   lower `REQUEST_TIMEOUT_MS` to "fix" a timeout — switch to async.

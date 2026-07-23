@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,7 +128,11 @@ type config struct {
 	gatewayURL   string
 	gatewayToken string
 	agentTarget  string
-	sessionKey   string
+
+	// Callers name a session; the bridge owns the namespace it lands in, so a
+	// caller cannot reach agent:main:main or any other session by guessing.
+	// Final key is sessionPrefix + ":" + session, or sessionPrefix alone.
+	sessionPrefix string
 
 	// Shared secret callers must present on /v1/openclaw. Empty disables the
 	// check, which leaves the endpoint open to anyone who knows the URL.
@@ -153,10 +158,10 @@ func loadConfig() config {
 		jobTTL:         time.Duration(envInt("JOB_TTL_MS", 3600000)) * time.Millisecond,
 		maxBodyBytes:   int64(envInt("MAX_BODY_BYTES", 1024*1024)),
 
-		gatewayURL:   strings.TrimRight(strings.TrimSpace(os.Getenv("OPENCLAW_GATEWAY_URL")), "/"),
-		gatewayToken: strings.TrimSpace(os.Getenv("OPENCLAW_GATEWAY_TOKEN")),
-		agentTarget:  envString("OPENCLAW_AGENT", "openclaw/default"),
-		sessionKey:   strings.TrimSpace(os.Getenv("OPENCLAW_SESSION_KEY")),
+		gatewayURL:    strings.TrimRight(strings.TrimSpace(os.Getenv("OPENCLAW_GATEWAY_URL")), "/"),
+		gatewayToken:  strings.TrimSpace(os.Getenv("OPENCLAW_GATEWAY_TOKEN")),
+		agentTarget:   envString("OPENCLAW_AGENT", "openclaw/default"),
+		sessionPrefix: strings.TrimRight(strings.TrimSpace(envString("OPENCLAW_SESSION_PREFIX", "agent:main:chatgpt")), ":"),
 
 		bridgeAPIKey: strings.TrimSpace(os.Getenv("BRIDGE_API_KEY")),
 
@@ -384,7 +389,7 @@ func handleOpenClaw(w http.ResponseWriter, r *http.Request, cfg config, jobs *jo
 		return
 	}
 
-	payload := normalizeInboundPayload(raw, cfg.sessionKey)
+	payload := normalizeInboundPayload(raw, cfg.sessionPrefix)
 	action = payload.Action
 	sessionKey = payload.SessionKey
 	jobID = payload.JobID
@@ -518,15 +523,24 @@ var allowedActions = map[string]struct{}{
 
 // Reserved by the gateway; it rejects these with a 400, so catch them here
 // where the error can name the actual problem.
-var reservedSessionPrefixes = []string{"subagent:", "cron:", "acp:"}
+const defaultSessionPrefix = "agent:main:chatgpt"
+
+// A session name is one path-safe segment. Colons are excluded on purpose:
+// they would let a caller climb out of the configured namespace.
+var sessionNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 
 // normalizedPayload is the inbound GPT Action body after coercion and defaults.
 type normalizedPayload struct {
-	Action     string
-	Message    string
+	Action  string
+	Message string
+	JobID   string
+
+	// Session is the caller-supplied name only, never a full key. It arrives
+	// as customSession, whose default lives in the OpenAPI schema so each
+	// Custom GPT can pin its own without touching the bridge.
+	Session string
+	// SessionKey is what actually goes upstream, built from the prefix.
 	SessionKey string
-	User       string
-	JobID      string
 }
 
 type validationResult struct {
@@ -535,17 +549,23 @@ type validationResult struct {
 }
 
 // normalizeInboundPayload coerces the decoded body and applies defaults:
-// sessionKey falls back to OPENCLAW_SESSION_KEY.
-func normalizeInboundPayload(raw map[string]any, defaultSessionKey string) normalizedPayload {
+// the session name is namespaced under the configured prefix.
+func normalizeInboundPayload(raw map[string]any, prefix string) normalizedPayload {
 	payload := normalizedPayload{
-		Action:     getString(raw, "action"),
-		Message:    getString(raw, "message"),
-		SessionKey: getString(raw, "sessionKey"),
-		User:       getString(raw, "user"),
-		JobID:      getString(raw, "jobId"),
+		Action:  getString(raw, "action"),
+		Message: getString(raw, "message"),
+		JobID:   getString(raw, "jobId"),
+		Session: getString(raw, "customSession"),
 	}
-	if payload.SessionKey == "" {
-		payload.SessionKey = defaultSessionKey
+
+	prefix = strings.TrimRight(strings.TrimSpace(prefix), ":")
+	if prefix == "" {
+		prefix = defaultSessionPrefix
+	}
+	if payload.Session == "" {
+		payload.SessionKey = prefix
+	} else {
+		payload.SessionKey = prefix + ":" + payload.Session
 	}
 	return payload
 }
@@ -572,11 +592,8 @@ func validateInboundPayload(payload normalizedPayload) validationResult {
 		}
 	}
 
-	for _, reserved := range reservedSessionPrefixes {
-		if strings.Contains(payload.SessionKey, reserved) {
-			errs = append(errs, "sessionKey must not use a reserved namespace: subagent:, cron:, acp:")
-			break
-		}
+	if payload.Session != "" && !sessionNamePattern.MatchString(payload.Session) {
+		errs = append(errs, "customSession must be 1-63 characters of letters, digits, dot, dash or underscore, starting with a letter or digit")
 	}
 
 	return validationResult{OK: len(errs) == 0, Errors: errs}
@@ -729,12 +746,6 @@ func askGateway(ctx context.Context, cfg config, payload normalizedPayload) (str
 			{"role": "user", "content": payload.Message},
 		},
 	}
-	// The OpenAI `user` field gives the gateway a stable session per
-	// conversation, so a multi-turn GPT chat keeps one OpenClaw session.
-	if payload.User != "" {
-		body["user"] = payload.User
-	}
-
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", err

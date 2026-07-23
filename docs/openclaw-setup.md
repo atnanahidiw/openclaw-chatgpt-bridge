@@ -114,23 +114,27 @@ operator access to the whole Gateway. It belongs on the bridge and nowhere else.
 
 ---
 
-## Step 4 — Choose the session
+## Step 4 — Choose the session namespace
 
-Every turn runs in an OpenClaw session. The bridge sends the one you configure as
-`OPENCLAW_SESSION_KEY`, via the `x-openclaw-session-key` header.
+Every turn runs in an OpenClaw session. You do not hand the caller a session key; you give
+the bridge a **prefix**, and the caller can only add a name onto the end of it.
 
-| Choice | Effect |
-|---|---|
-| `agent:main:main` | ChatGPT's work lands in your main agent session, mixed into your normal conversation |
-| `agent:main:chatgpt` | ChatGPT's work lives in its own session, separate from your day-to-day chat |
+Set that prefix with `OPENCLAW_SESSION_PREFIX`. The default, `agent:main:chatgpt`, is the
+right one — it keeps ChatGPT's work in its own corner, away from your day-to-day chat. Point
+it at `agent:main:main` and everything ChatGPT does spills into your normal conversation, so
+don't.
 
-**Prefer a dedicated session.** It keeps ChatGPT's transcript out of your main context, and
-limits what a leaked bridge key can reach.
+Here is how a request turns into a session:
 
-The session does not need to exist beforehand — OpenClaw creates it on first use. Reserved
-namespaces are rejected: `subagent:`, `cron:`, `acp:`.
+- caller sends `research` → the work lands in `agent:main:chatgpt:research`
+- caller sends nothing → it lands in `agent:main:chatgpt`
 
----
+The reason this is a prefix rather than a fixed key is safety. The caller supplies a name,
+never a whole key, and the bridge throws out anything with a colon in it. So even someone
+who steals the bridge key cannot craft a value that reaches `agent:main:main` or a reserved
+`subagent:` / `cron:` / `acp:` session — the namespace simply isn't theirs to pick.
+
+None of these sessions need to exist first. OpenClaw makes one the moment it is used.
 
 ## Step 5 — Make the Gateway reachable by the bridge
 

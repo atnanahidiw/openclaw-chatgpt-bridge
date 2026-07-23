@@ -650,7 +650,7 @@ gcloud run deploy openclaw-bridge \
   --memory 256Mi \
   --set-env-vars 'ADDR=:8080' \
   --set-env-vars "OPENCLAW_GATEWAY_URL=$OPENCLAW_GATEWAY_URL" \
-  --set-env-vars "OPENCLAW_SESSION_KEY=$OPENCLAW_SESSION_KEY" \
+  --set-env-vars "OPENCLAW_SESSION_PREFIX=$OPENCLAW_SESSION_PREFIX" \
   --set-env-vars "REQUEST_TIMEOUT_MS=$REQUEST_TIMEOUT_MS" \
   --set-env-vars 'TAILSCALE_ENABLED=true' \
   --set-env-vars 'TAILSCALE_PROXY_ADDR=127.0.0.1:1055' \

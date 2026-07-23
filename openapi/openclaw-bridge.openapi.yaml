@@ -61,31 +61,43 @@ paths:
                   type: string
                   description: >
                     Identifier returned by ask_async. Required for get_result.
-                sessionKey:
+                customSession:
                   type: string
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+                  default: openclaw-bridge
                   description: >
-                    OpenClaw session that owns the work. Defaults to the bridge's
-                    configured session. Must not use the reserved namespaces
-                    subagent:, cron:, or acp:.
-                user:
-                  type: string
-                  description: >
-                    Stable identifier for this conversation. Pass the same value
-                    on every call in one chat so OpenClaw keeps context between
-                    turns; change it to start fresh.
+                    Which OpenClaw session this work belongs to. Always send it;
+                    the default below is the right value unless the user asks for
+                    a separate line of work.
+
+
+                    You pass only a name. The bridge places it inside its own
+                    namespace, so "openclaw-bridge" becomes
+                    agent:main:chatgpt:openclaw-bridge. Omit it entirely and the
+                    work goes to agent:main:chatgpt instead.
+
+
+                    Set the default here, once, per Custom GPT — this schema is
+                    where that choice lives, not the instructions. A stable value
+                    such as the GPT's own id keeps one GPT's work together and
+                    separate from every other GPT's.
+
+
+                    Letters, digits, dot, dash and underscore only. Colons are
+                    rejected: the namespace is not yours to choose.
             examples:
               ask:
-                summary: A quick question or small task
+                summary: A quick question, in the default session
                 value:
                   action: ask
                   message: Summarize the deployment docs and list anything out of date.
-                  user: conv:2026-07-23-abc
+                  customSession: openclaw-bridge
               askAsync:
-                summary: Start longer work without waiting
+                summary: Start longer work in its own named session
                 value:
                   action: ask_async
                   message: Review the repository and list release blockers.
-                  user: conv:2026-07-23-abc
+                  customSession: release-review
               getResult:
                 summary: Collect the reply from an async turn
                 value:
@@ -244,7 +256,10 @@ components:
           description: State of an async turn.
         sessionKey:
           type: string
-          description: OpenClaw session the turn ran in.
+          description: >
+            The full OpenClaw session key the turn ran in, after the bridge
+            applied its namespace. Echoed back so you can see where the work
+            landed.
         startedAt:
           type: string
           format: date-time
