@@ -1,4 +1,26 @@
 (() => {
+  // Close the mobile dropdown once a link is taken. Without this an in-page
+  // anchor scrolls behind a menu that is still covering the content.
+  const mobileMenu = document.querySelector("details.mobile-menu");
+
+  if (mobileMenu) {
+    for (const link of mobileMenu.querySelectorAll("a")) {
+      link.addEventListener("click", () => {
+        mobileMenu.open = false;
+      });
+    }
+
+    document.addEventListener("click", (event) => {
+      if (mobileMenu.open && !mobileMenu.contains(event.target)) {
+        mobileMenu.open = false;
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") mobileMenu.open = false;
+    });
+  }
+
   const useCases = Array.from(document.querySelectorAll("details.use-case"));
 
   if (useCases.length === 0) return;

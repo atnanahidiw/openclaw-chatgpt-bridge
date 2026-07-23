@@ -7,9 +7,11 @@
   <img alt="ChatGPT Actions" src="https://img.shields.io/badge/ChatGPT-Actions-10A37F?logo=openai&logoColor=white" />
 </p>
 
-<p align="center">
-  <img alt="SECURITY WARNING — READ BEFORE DEPLOYING" src="https://img.shields.io/badge/⚠_SECURITY_WARNING-READ_BEFORE_DEPLOYING-b91c1c?style=for-the-badge&labelColor=7f1d1d" />
-</p>
+#### Bridge service for connecting a Custom GPT to OpenClaw.
+
+<br>
+
+<img alt="SECURITY WARNING — READ BEFORE DEPLOYING" src="https://img.shields.io/badge/⚠_SECURITY_WARNING-READ_BEFORE_DEPLOYING-b91c1c?style=for-the-badge&labelColor=7f1d1d" />  
 
 > [!CAUTION]
 > **This bridge deliberately exposes a path from the public internet into your OpenClaw agent.**
@@ -38,8 +40,6 @@
 > Run OpenClaw behind Tailscale, keep the gateway off public interfaces, and treat every
 > secret here as a production credential.
 
-Bridge service for connecting a Custom GPT to OpenClaw.
-
 ## Purpose
 
 Bridge GPT Action requests to OpenClaw without exposing OpenClaw directly.
@@ -53,7 +53,11 @@ See [Use cases](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/usecases.h
 ## Architecture
 
 ```text
-ChatGPT Action -> OpenClaw bridge -> OpenClaw Gateway (/v1/chat/completions)
++----------------+        +--------+        +---------------------------+
+| ChatGPT Action | -----> | bridge | -----> | OpenClaw Gateway          |
++----------------+        +--------+        | POST /v1/chat/completions |
+   public HTTPS            api_key           +---------------------------+
+                           checked here        runs a real agent turn
 ```
 
 The bridge authenticates the caller, forwards the instruction to OpenClaw's Gateway, and

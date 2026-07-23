@@ -48,7 +48,13 @@ The virtual machine path below uses:
 ## Simple connection map
 
 ```text
-ChatGPT -> https://bridge.yourdomain.com -> bridge on VM -> Tailscale -> OpenClaw
++---------+   HTTPS    +-----------------+   Tailscale   +----------+
+| ChatGPT | ---------> | bridge on VM    | ------------> | OpenClaw |
++---------+            | + Caddy for TLS |               +----------+
+                       +-----------------+
+
+   public                 reachable from                 never leaves
+  internet                 the internet                  your tailnet
 ```
 
 ## Before you start
@@ -229,45 +235,20 @@ sudo mkdir -p /opt/openclaw-bridge
 cd /opt/openclaw-bridge
 ```
 
-Now create an `.env` file:
+Now write your `.env` into that folder, at `/opt/openclaw-bridge/.env`.
 
-```bash
-sudo tee .env >/dev/null <<'EOF'
-ADDR=127.0.0.1:8080
-OPENCLAW_GATEWAY_URL=https://your-host.your-tailnet.ts.net
-OPENCLAW_GATEWAY_TOKEN=replace-with-gateway-auth-token
-OPENCLAW_SESSION_KEY=agent:main:main
-BRIDGE_API_KEY=replace-with-a-long-random-secret
-REQUEST_TIMEOUT_MS=30000
-MAX_BODY_BYTES=1048576
-EOF
-```
+**[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** lists every
+setting, says which ones you need, and shows how to generate the secrets. Follow it there.
 
-### What each line means
+### What is different on a server
 
-Every setting is explained once in
-**[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
-which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_GATEWAY_TOKEN` are two
-different secrets rather than one.
-
-Three things are specific to this VM setup:
+Three things change once the bridge lives on a VM rather than in a container:
 
 | Setting | Why it differs here |
 |---|---|
-| `ADDR=127.0.0.1:8080` | The bridge listens **only on localhost**, because Caddy sits in front and proxies to it. A cloud container would use `:8080` instead |
-| `TS_AUTHKEY` | Not needed. Tailscale runs on the VM itself, authenticated in Step 4 — there is no sidecar container to authorise |
-| Where the file lives | This `.env` is on the **server**, at `/opt/openclaw-bridge/.env`, not the one in your local checkout |
-
-Generate the two secrets rather than inventing them:
-
-```bash
-openssl rand -hex 32   # BRIDGE_API_KEY
-# OPENCLAW_GATEWAY_TOKEN is not generated: copy gateway.auth.token
-# from ~/.openclaw/openclaw.json
-```
-
-Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
-unauthenticated requests from anyone who finds the URL.
+| `ADDR=127.0.0.1:8080` | Caddy sits in front, so the bridge only needs to listen on localhost. A cloud container uses `:8080` instead |
+| `TS_AUTHKEY` | You do not need it. Tailscale runs on the VM itself and you logged it in back at Step 4 |
+| Where the file lives | This `.env` belongs on the **server**, at `/opt/openclaw-bridge/.env`. It is not the one in your local checkout |
 
 ---
 
@@ -364,28 +345,19 @@ If it works, the bridge is ready.
 
 ---
 
-## Step 10 — Add the action in Custom GPT
+## Step 10 — Connect it to ChatGPT
 
-In ChatGPT:
+Your bridge is running. The last piece is telling ChatGPT about it.
 
-1. Open **Explore GPTs**
-2. Create a new GPT, or edit an existing one
-3. Open **Actions**
-4. Click **Create new action**
-5. Import `openapi/openclaw-bridge.openapi.yaml`
-6. Save the GPT
+There are four things to do: import the schema, point it at your bridge URL, add the API
+key, and write instructions the model will follow. They are all on one page.
 
-You can keep the Custom GPT private.
+**[Custom GPT setup]({{ '/custom-gpt.html' | relative_url }})**
 
-### What must be public?
+One thing to carry across from this guide: only the bridge URL has to be reachable from the
+internet. OpenClaw stays private, and the Gateway token never leaves the bridge.
 
-Only the **bridge URL** must be public and reachable over HTTPS:
-
-```text
-https://bridge.yourdomain.com/v1/openclaw
-```
-
-OpenClaw itself can stay private behind Tailscale.
+---
 
 ---
 
@@ -404,7 +376,7 @@ OpenClaw itself can stay private behind Tailscale.
 
 ---
 
-## Free tier deployment with Azure Container Apps <span class="tested-tag">Tested</span>{#free-tier-deployment-with-azure-container-apps}
+## Free tier deployment with Azure Container Apps <span class="tested-tag">Tested</span> {#free-tier-deployment-with-azure-container-apps}
 
 This is the **free** path on Azure. It does not use a virtual machine, a domain name, or Caddy.
 Instead it uses **Azure Container Apps**, which runs Tailscale as a second container beside the bridge and hands you an HTTPS URL for nothing.
@@ -450,10 +422,14 @@ Container Apps runs **several containers side by side**, sharing one network. So
 ### Simple connection map
 
 ```text
-ChatGPT -> https://<app>.<region>.azurecontainerapps.io -> bridge container
-                                                              |
-                                              localhost:1055  v
-                                                        tailscale container -> OpenClaw
++---------+  HTTPS   +-------------------------+  Tailscale   +----------+
+| ChatGPT | -------> | Container App           | -----------> | OpenClaw |
++---------+          |                         |              +----------+
+                     | bridge  <-->  tailscale |
+                     |      localhost:1055     |
+                     +-------------------------+
+
+ public URL           one replica, two containers        stays private
 ```
 
 Both containers share `localhost`, which is what makes the proxy work.
@@ -473,24 +449,12 @@ You do **not** need Kubernetes, a domain name, or a server.
 
 ### Step 1 — Get a Tailscale auth key
 
-Container Apps starts and stops your containers automatically, so Tailscale must join the tailnet **without anyone typing a password**.
+Your container joins the tailnet by itself, so it needs a key of its own. It takes a minute
+to make, and two of the switches on it matter.
 
-1. Open the [Tailscale admin console](https://login.tailscale.com/admin/settings/keys).
-2. Click **Generate auth key**.
-3. Turn on **Ephemeral**.
-4. Turn on **Reusable**.
-5. Click **Generate key** and copy the value. It starts with `tskey-`.
-6. Put it in your `.env` as `TS_AUTHKEY`.
+**[Getting a Tailscale auth key]({{ '/step-by-step.html' | relative_url }}#tailscale-auth-key)**
 
-This is a **different device** from the machine running OpenClaw, so it needs its own key.
-Do not reuse that machine's.
-
-#### Why ephemeral and reusable?
-
-| Setting | Why |
-|---|---|
-| **Ephemeral** | When the app scales to zero, the device removes itself from your tailnet instead of piling up as a dead entry |
-| **Reusable** | The app may start many times. A single-use key would work once and then fail |
+Save it in `.env` as `TS_AUTHKEY`, then come back here.
 
 ---
 
@@ -984,21 +948,19 @@ The `tailscale` container tells you whether it joined the tailnet.
 
 ---
 
-### Step 7 — Add the action in Custom GPT
+### Step 7 — Connect it to ChatGPT
 
-In ChatGPT:
+Your bridge is running. The last piece is telling ChatGPT about it.
 
-1. Open **Explore GPTs**
-2. Create a new GPT, or edit an existing one
-3. Open **Actions**
-4. Click **Create new action**
-5. Import `openapi/openclaw-bridge.openapi.yaml`
-6. Change the `servers:` URL at the top of the schema to your Container Apps URL
-7. Save the GPT
+There are four things to do: import the schema, point it at your bridge URL, add the API
+key, and write instructions the model will follow. They are all on one page.
 
-#### What must be public?
+**[Custom GPT setup]({{ '/custom-gpt.html' | relative_url }})**
 
-Only the **bridge URL**. OpenClaw itself stays private behind Tailscale.
+One thing to carry across from this guide: only the bridge URL has to be reachable from the
+internet. OpenClaw stays private, and the Gateway token never leaves the bridge.
+
+---
 
 ---
 

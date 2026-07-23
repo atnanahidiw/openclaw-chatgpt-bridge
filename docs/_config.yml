@@ -13,3 +13,7 @@ defaults:
       path: ""
     values:
       layout: default
+
+# Attribution note for the logo files; not a site page.
+exclude:
+  - assets/img/README.md

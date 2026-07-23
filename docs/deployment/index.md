@@ -24,28 +24,23 @@ endpoint accepts anyone who finds the URL.
 
 <h2 class="section-heading">Choose a deployment target</h2>
 <div class="card-grid">
-  <a class="doc-card" href="{{ '/deployment/free-tier.html' | relative_url }}">
-    <span class="card-icon">$0</span>
-    <strong>Free options</strong>
-    <span>Compare the platforms that still run the bridge for nothing, and pick one.</span>
-  </a>
   <a class="doc-card" href="{{ '/deployment/aws.html' | relative_url }}">
-    <span class="card-icon">AWS</span>
+    <span class="card-icon card-logo"><img src="{{ '/assets/img/amazonwebservices.svg' | relative_url }}" alt="" width="20" height="20"></span>
     <strong>Amazon Web Services</strong>
     <span>Deploy with EC2, Route 53, Caddy, and Tailscale.</span>
   </a>
   <a class="doc-card" href="{{ '/deployment/azure.html' | relative_url }}">
-    <span class="card-icon">AZ</span>
+    <span class="card-icon card-logo"><img src="{{ '/assets/img/microsoftazure.svg' | relative_url }}" alt="" width="20" height="20"></span>
     <strong>Microsoft Azure</strong>
     <span>Deploy with Azure VM, Azure DNS, Caddy, and Tailscale.</span>
   </a>
   <a class="doc-card" href="{{ '/deployment/digital-ocean.html' | relative_url }}">
-    <span class="card-icon">DO</span>
+    <span class="card-icon card-logo"><img src="{{ '/assets/img/digitalocean.svg' | relative_url }}" alt="" width="20" height="20"></span>
     <strong>DigitalOcean</strong>
     <span>Run the bridge on a Droplet with HTTPS and private connectivity.</span>
   </a>
   <a class="doc-card" href="{{ '/deployment/gcp.html' | relative_url }}">
-    <span class="card-icon">GCP</span>
+    <span class="card-icon card-logo"><img src="{{ '/assets/img/googlecloud.svg' | relative_url }}" alt="" width="20" height="20"></span>
     <strong>Google Cloud Platform</strong>
     <span>Deploy with Compute Engine, Cloud DNS, Caddy, and Tailscale.</span>
   </a>

@@ -28,7 +28,11 @@ For a more detailed VPS setup, or a free hosted one, use a
 The bridge sits between ChatGPT and OpenClaw:
 
 ```text
-ChatGPT -> bridge -> OpenClaw
++---------+        +--------+        +----------+
+| ChatGPT | -----> | bridge | -----> | OpenClaw |
++---------+        +--------+        +----------+
+  decides           guards the        does the
+  what to do        door              work
 ```
 
 If OpenClaw is private, the bridge can reach it through Tailscale.
@@ -81,7 +85,11 @@ Then open it and set the values below. `.env` is gitignored — never commit it.
 This trips people up, because both are "the secret":
 
 ```text
-Custom GPT --[ BRIDGE_API_KEY ]--> bridge --[ OPENCLAW_GATEWAY_TOKEN ]--> OpenClaw
++------------+   BRIDGE_API_KEY  +--------+  GATEWAY_TOKEN   +----------+
+| Custom GPT | ----------------> | bridge | ---------------> | OpenClaw |
++------------+                   +--------+                  +----------+
+
+asks for work              keeps strangers out            does the work
 ```
 
 - `BRIDGE_API_KEY` protects **the bridge** from strangers who find its URL.
@@ -106,6 +114,31 @@ you can make deliberately, not one to drift into.
 
 The same value goes in the Custom GPT Action as an `api_key` header — see
 [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
+
+### Getting a Tailscale auth key {#tailscale-auth-key}
+
+Skip this if you are deploying to a VM. There you run `tailscale up` on the machine and log
+in the normal way, so there is no key to manage.
+
+A cloud container has nobody around to type a password. It needs a key so it can join your
+tailnet by itself:
+
+1. Open the [Tailscale admin console](https://login.tailscale.com/admin/settings/keys).
+2. Click **Generate auth key**.
+3. Turn on **Ephemeral**.
+4. Turn on **Reusable**.
+5. Click **Generate key** and copy it. It starts with `tskey-`.
+6. Put it in `.env` as `TS_AUTHKEY`.
+
+Two of the switches matter:
+
+| Setting | Why |
+|---|---|
+| **Ephemeral** | When the app scales to zero, the device removes itself. Without this your device list fills with dead entries |
+| **Reusable** | The app starts and stops many times. A single-use key works once, then fails |
+
+Remember this container is a different device from the machine running OpenClaw. Give it
+its own key rather than reusing that one.
 
 ### If OpenClaw is private
 
@@ -277,79 +310,21 @@ If OpenClaw is private, use the Tailscale-backed manifest.
 
 ---
 
-## 10. Add the GPT Action
+## 10. Connect it to ChatGPT
 
-> For the full version — schema import, the `servers:` URL, endpoint exposure, and the
-> instructions the model needs for the async loop — see
-> [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
+Your bridge is running and answering. Now ChatGPT needs to know about it.
 
-1. Open the Custom GPT builder in ChatGPT.
-2. Go to **Actions**.
-3. Add a new action from OpenAPI.
-4. Import `openapi/openclaw-bridge.openapi.yaml`.
-5. Point it at the bridge URL that ChatGPT can reach.
-6. Save the GPT.
+Import the schema, point it at your bridge URL, add the API key, and write the
+instructions. Then test it. That is part 3 of the
+[three parts](#the-three-parts-of-a-working-setup) from the top of this page, and it has a
+guide of its own.
 
-### What must be public?
+**[Custom GPT setup]({{ '/custom-gpt.html' | relative_url }})**
 
-Only the **bridge URL** must be reachable by ChatGPT.
-OpenClaw itself can stay private behind Tailscale.
+### What has to be public?
 
----
-
-## 11. Test the GPT Action
-
-After you save the GPT, do one small test.
-
-### What to type in ChatGPT
-
-Use a simple prompt like this:
-
-```text
-Create a flow to test the bridge
-```
-
-### What should happen
-
-1. ChatGPT sends the request to the bridge.
-2. The bridge forwards it to OpenClaw.
-3. OpenClaw does the work.
-4. ChatGPT shows the result.
-
-### What to check if it fails
-
-If the test does not work, check these things first:
-
-- the bridge URL is correct
-- HTTPS works
-- the OpenAPI file was imported correctly
-- `OPENCLAW_GATEWAY_TOKEN` matches `gateway.auth.token` in OpenClaw
-- the bridge can reach OpenClaw through Tailscale
-
----
-
-## 12. How to use it day to day
-
-Once it is set up, the flow is simple:
-
-1. Open your Custom GPT.
-2. Ask it to do a task.
-3. ChatGPT sends the task to the bridge.
-4. The bridge sends it to OpenClaw.
-5. OpenClaw does the work.
-6. ChatGPT shows the result back to you.
-
-### Good example prompts
-
-- `Create a flow to review this repo and identify release blockers`
-- `Run a task to update the deployment docs based on the current manifests`
-- `Run a task to summarize repeated support issues and draft FAQ updates`
-- `Finish the flow`
-
-### Simple rule to remember
-
-- Use ChatGPT for the request and review.
-- Use OpenClaw for the actual execution.
+Only the bridge URL. OpenClaw stays behind Tailscale where it was, and the Gateway token
+never leaves the bridge.
 
 ---
 
@@ -361,6 +336,5 @@ Once it is set up, the flow is simple:
 - [ ] `go test ./...` passes, or Docker works
 - [ ] bridge starts with `go run .` or Docker
 - [ ] `healthz` and `readyz` respond
-- [ ] `/v1/openclaw` works
-- [ ] GPT Action is imported
-- [ ] Test prompt works in ChatGPT
+- [ ] `/v1/openclaw` returns a reply for an `ask`
+- [ ] Continue to [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }})

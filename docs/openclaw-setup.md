@@ -18,8 +18,12 @@ runs a real agent turn, and the bridge is what calls it.**
 ## What you are building
 
 ```text
-ChatGPT -> bridge -> POST /v1/chat/completions -> a real OpenClaw agent turn
-                     └── the endpoint you enable on this page
++---------+      +--------+      +---------------------+      +---------------+
+| ChatGPT | ---> | bridge | ---> | POST                |      | a real agent  |
++---------+      +--------+      | /v1/chat/completions| ---> | turn: shell,  |
+                                 +---------------------+      | files, skills |
+                                    ^
+                                    +-- the endpoint you enable on this page
 ```
 
 The agent that answers has its normal capabilities: shell commands, file access, and your

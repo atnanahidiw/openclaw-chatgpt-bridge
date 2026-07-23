@@ -487,12 +487,33 @@ a:hover { color: #53389e; }
     padding: .55rem;
     border: 1px solid #344054;
     border-radius: .65rem;
+    max-height: calc(100vh - 5.5rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     background: var(--nav);
     box-shadow: 0 16px 40px rgba(0, 0, 0, .3);
   }
 
   .mobile-menu nav a { display: block; padding: .55rem .65rem; color: #d0d5dd; border-radius: .4rem; font-size: .84rem; text-decoration: none; }
   .mobile-menu nav a:hover { color: white; background: var(--nav-soft); }
+
+  /* Mirrors the sidebar grouping, so the two navs read the same. */
+  .mobile-menu nav .nav-label {
+    margin: .5rem .65rem .25rem;
+    color: var(--subtle);
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .mobile-menu nav .nav-label:first-child { margin-top: .15rem; }
+
+  .mobile-menu nav a.is-active {
+    color: #fff;
+    background: var(--accent);
+    font-weight: 600;
+  }
   .main-content { margin-left: 0; }
   .doc-content { padding-top: 3rem; }
 }
@@ -622,4 +643,17 @@ a:hover { color: #53389e; }
   font-size: 1.02rem;
   font-weight: 700;
   letter-spacing: -.01em;
+}
+
+/* Provider logos on deployment cards. Neutral tile so the brand colours are
+   shown as published, rather than tinted by the accent background. */
+.card-logo {
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.card-logo img {
+  display: block;
+  width: 20px;
+  height: 20px;
 }

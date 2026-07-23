@@ -38,22 +38,16 @@
               <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#operations-admin">Operations &amp; admin</a>
               <a class="nav-sublink" href="{{ '/usecases.html' | relative_url }}#sales-support">Sales &amp; support</a>
             </div>
-          </div>
-
-          <div class="nav-group">
-            <p class="nav-label">Get started</p>
+            <a class="nav-link{% if page.url == '/openclaw-setup.html' %} is-active{% endif %}" href="{{ '/openclaw-setup.html' | relative_url }}">OpenClaw setup</a>
             <a class="nav-link{% if page.url == '/step-by-step.html' %} is-active{% endif %}" href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
+            <a class="nav-link{% if page.url == '/custom-gpt.html' %} is-active{% endif %}" href="{{ '/custom-gpt.html' | relative_url }}">Custom GPT setup</a>
             <a class="nav-link{% if page.url == '/troubleshooting.html' %} is-active{% endif %}" href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
           </div>
 
           <div class="nav-group">
             <p class="nav-label">Deploy</p>
-            <a class="nav-link{% if page.url == '/deployment/' %} is-active{% endif %}" href="{{ '/deployment/' | relative_url }}">Overview</a>
+            <a class="nav-link{% if page.url == '/deployment/' %} is-active{% endif %}" href="{{ '/deployment/' | relative_url }}">Choose a deployment target</a>
             <a class="nav-link{% if page.url == '/deployment/free-tier.html' %} is-active{% endif %}" href="{{ '/deployment/free-tier.html' | relative_url }}">Free options</a>
-            <a class="nav-link{% if page.url == '/deployment/aws.html' %} is-active{% endif %}" href="{{ '/deployment/aws.html' | relative_url }}">Amazon Web Services</a>
-            <a class="nav-link{% if page.url == '/deployment/azure.html' %} is-active{% endif %}" href="{{ '/deployment/azure.html' | relative_url }}">Microsoft Azure</a>
-            <a class="nav-link{% if page.url == '/deployment/digital-ocean.html' %} is-active{% endif %}" href="{{ '/deployment/digital-ocean.html' | relative_url }}">DigitalOcean</a>
-            <a class="nav-link{% if page.url == '/deployment/gcp.html' %} is-active{% endif %}" href="{{ '/deployment/gcp.html' | relative_url }}">Google Cloud Platform</a>
           </div>
         </nav>
 
@@ -67,16 +61,18 @@
         <a class="mobile-brand" href="{{ '/' | relative_url }}"><span>🐾</span> OpenClaw</a>
         <details class="mobile-menu">
           <summary aria-label="Open navigation">Menu</summary>
-          <nav>
-            <a href="{{ '/' | relative_url }}">Introduction</a>
-            <a href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
-            <a href="{{ '/usecases.html' | relative_url }}">Use cases</a>
-            <a href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
-            <a href="{{ '/deployment/' | relative_url }}">Deployment overview</a>
-            <a href="{{ '/deployment/aws.html' | relative_url }}">AWS deployment</a>
-            <a href="{{ '/deployment/azure.html' | relative_url }}">Azure deployment</a>
-            <a href="{{ '/deployment/digital-ocean.html' | relative_url }}">DigitalOcean deployment</a>
-            <a href="{{ '/deployment/gcp.html' | relative_url }}">GCP deployment</a>
+          <nav aria-label="Documentation navigation">
+            <p class="nav-label">Overview</p>
+            <a{% if page.url == '/' %} class="is-active" aria-current="page"{% endif %} href="{{ '/' | relative_url }}">Introduction</a>
+            <a{% if page.url == '/usecases.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/usecases.html' | relative_url }}">Use cases</a>
+            <a{% if page.url == '/openclaw-setup.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/openclaw-setup.html' | relative_url }}">OpenClaw setup</a>
+            <a{% if page.url == '/step-by-step.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/step-by-step.html' | relative_url }}">Step-by-step setup</a>
+            <a{% if page.url == '/custom-gpt.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/custom-gpt.html' | relative_url }}">Custom GPT setup</a>
+            <a{% if page.url == '/troubleshooting.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/troubleshooting.html' | relative_url }}">Troubleshooting</a>
+
+            <p class="nav-label">Deploy</p>
+            <a{% if page.url == '/deployment/' %} class="is-active" aria-current="page"{% endif %} href="{{ '/deployment/' | relative_url }}">Choose a deployment target</a>
+            <a{% if page.url == '/deployment/free-tier.html' %} class="is-active" aria-current="page"{% endif %} href="{{ '/deployment/free-tier.html' | relative_url }}">Free options</a>
           </nav>
         </details>
       </header>

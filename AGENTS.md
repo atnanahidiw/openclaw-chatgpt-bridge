@@ -9,7 +9,10 @@ Gateway. It authenticates the caller, forwards the instruction to OpenClaw's
 OpenAI-compatible endpoint, and returns what the agent said.
 
 ```text
-ChatGPT Action -> POST /v1/openclaw (this bridge) -> OpenClaw /v1/chat/completions
++----------------+      +-------------------+      +-----------------------+
+| ChatGPT Action | ---> | POST /v1/openclaw | ---> | OpenClaw Gateway      |
++----------------+      | (this bridge)     |      | /v1/chat/completions  |
+                        +-------------------+      +-----------------------+
 ```
 
 The upstream call runs a **real agent turn**: shell commands, file access, installed
