@@ -420,7 +420,11 @@ func handleOpenClaw(w http.ResponseWriter, r *http.Request, cfg config, jobs *jo
 	case actionAskAsync:
 		created := jobs.start(payload.SessionKey)
 		jobID = created.ID
-		statusCode = http.StatusAccepted
+		// 200, not 202. Semantically 202 is the better answer for "accepted,
+		// still running", but ChatGPT Actions treat some non-200 success codes
+		// as failures and surface a ClientResponseError to the user. The body
+		// already carries status="running", so nothing is lost.
+		statusCode = http.StatusOK
 
 		// Deliberately detached from the request context: the caller gets an
 		// id immediately and the turn keeps running after they disconnect.

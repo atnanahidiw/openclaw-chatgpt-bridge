@@ -23,6 +23,15 @@ paths:
         Runs an OpenClaw agent turn and returns the agent's reply. OpenClaw can
         read and write files, run shell commands, and use its configured skills,
         so treat it as an assistant that acts rather than one that only answers.
+      # ChatGPT treats every non-GET operation as consequential by default, which
+      # forces a confirmation dialog on every call and hides the "Always Allow"
+      # button. Setting this to false lets the user grant standing permission.
+      #
+      # Understand what that permits: this one operation carries ask, ask_async
+      # and get_result, so approving it once approves everything the agent can
+      # do — including shell commands on the machine running OpenClaw. Set it
+      # back to true if you would rather confirm each call.
+      x-openai-isConsequential: false
       requestBody:
         required: true
         content:
@@ -85,13 +94,22 @@ paths:
       responses:
         "200":
           description: >
-            The turn finished (ask), or the job's current state was read
-            (get_result).
+            The turn finished (ask), an async turn was accepted (ask_async), or
+            the job's current state was read (get_result). Everything that
+            succeeds returns 200; check the status field rather than the code.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeReply"
               examples:
+                accepted:
+                  summary: ask_async accepted the work
+                  value:
+                    ok: true
+                    jobId: a15b1d0cac4056c23c415f65
+                    status: running
+                    sessionKey: agent:main:chatgpt
+                    hint: poll get_result with this jobId until status is done or failed
                 answered:
                   summary: ask returned a reply
                   value:
@@ -115,20 +133,6 @@ paths:
                     status: failed
                     error: OpenClaw did not reply in time
                     hint: this turn will not complete; read error and retry only if it is transient
-        "202":
-          description: An async turn was accepted and is running.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BridgeReply"
-              examples:
-                accepted:
-                  value:
-                    ok: true
-                    jobId: a15b1d0cac4056c23c415f65
-                    status: running
-                    sessionKey: agent:main:chatgpt
-                    hint: poll get_result with this jobId until status is done or failed
         "400":
           description: The body was not a single JSON object, or it failed validation.
           content:

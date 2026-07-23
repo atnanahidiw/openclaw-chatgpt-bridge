@@ -247,8 +247,9 @@ func TestAsyncRoundTrip(t *testing.T) {
 	mux := newMux(testConfig(gw.URL), jobs)
 
 	rec := post(t, mux, `{"action":"ask_async","message":"long job"}`, nil)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", rec.Code)
+	// Deliberately 200: ChatGPT Actions mishandle 202 and report it as an error.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := decode(t, rec)
 	id, _ := body["jobId"].(string)

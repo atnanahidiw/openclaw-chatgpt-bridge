@@ -168,14 +168,23 @@ result. Do not pretend to do the work yourself, and never invent an answer you
 did not receive from OpenClaw.
 
 CHOOSING THE RIGHT CALL
-- ask: quick questions and small tasks. It waits for the answer. Expect roughly
-  30 seconds even for something trivial, because a real agent turn is starting up.
-- ask_async: anything involving reading files, searching, editing, running
-  commands, or multi-step work. It returns a jobId immediately.
-- get_result: fetch an async reply using that jobId.
+Default to ask_async. Use it unless you have a specific reason not to, including
+for greetings and one-line questions.
 
-When unsure, prefer ask_async. A sync call that exceeds the timeout wastes the
-whole turn; an async call never does.
+Why: even a trivial reply takes about 60 seconds, because a real agent turn has
+to start. If the bridge has been idle it also has to wake up first, which adds
+another 20 or so. That total can exceed the time this Action is allowed to wait,
+and the user sees a connection error instead of an answer. ask_async returns in
+well under a second, so it never hits that limit.
+
+- ask_async: your default. Returns a jobId immediately. Then poll get_result.
+- get_result: fetch an async reply using that jobId.
+- ask: only when the user explicitly asks you to wait, or you are already several
+  successful turns into a conversation and know the bridge is warm. Even then it
+  is the riskier choice.
+
+"Say hi to OpenClaw" is an ask_async, not an ask. Short question does not mean
+short turn.
 
 THE ASYNC LOOP
 1. Call ask_async with a specific instruction. Keep the jobId.
@@ -240,7 +249,7 @@ Ask OpenClaw to confirm it is reachable and name its working directory.
 ```
 
 Expect an `ask`, and a real path in the answer. This proves the Action, the URL, the API
-key, and the network path in one step. Takes around 30 seconds.
+key, and the network path in one step. Takes around 60 seconds.
 
 ### 2. Prove it can act
 
@@ -281,7 +290,8 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 | "I could not reach the service" | `servers:` still has the placeholder URL, or the bridge is asleep | Fix the URL. A cold-starting bridge takes a few seconds — ask again |
 | Talks about calling the action but nothing happens | The action was saved without importing cleanly | Re-import the schema and confirm `sendToOpenClaw` is listed |
 | `401`, body `{"error":"unauthorized"}` | The Action's `api_key` is missing or wrong | Re-check Step 3: it must equal `BRIDGE_API_KEY` on the bridge |
-| `504`, or the GPT reports a timeout | A slow task was sent with `ask` | Strengthen the CHOOSING THE RIGHT CALL section so it prefers `ask_async` |
+| "I could not reach OpenClaw", or a connection error | Almost always a cold start plus a sync `ask`. The bridge sleeps when idle (~20s to wake) and a turn takes ~30s, which together exceed what the Action waits for | Make the GPT use `ask_async`. Nothing is broken; it just took too long |
+| `504` from the bridge | The turn outlived `REQUEST_TIMEOUT_MS` | Use `ask_async`. Raising the timeout does not help, because the Action gives up first |
 | `500` | The bridge's own gateway token is wrong, or its URL is unset | Server-side. Check `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_GATEWAY_URL` |
 | `502` | OpenClaw was unreachable | The machine running OpenClaw may be asleep, offline, or off the tailnet |
 | `404` on `get_result` | The jobId expired, or the bridge restarted and lost it | Jobs are in memory. Start the work again |
