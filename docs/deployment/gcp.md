@@ -236,6 +236,7 @@ ADDR=127.0.0.1:8080
 OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
 OPENCLAW_WEBHOOK_SECRET=replace-with-a-long-random-secret
 OPENCLAW_SESSION_KEY=agent:main:main
+BRIDGE_API_KEY=replace-with-a-long-random-secret
 REQUEST_TIMEOUT_MS=30000
 MAX_BODY_BYTES=1048576
 EOF
@@ -243,14 +244,28 @@ EOF
 
 ### What each line means
 
-| Setting | Meaning |
+Every setting is explained once in
+**[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
+which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_WEBHOOK_SECRET` are two
+different secrets rather than one.
+
+Three things are specific to this VM setup:
+
+| Setting | Why it differs here |
 |---|---|
-| `ADDR=127.0.0.1:8080` | bridge listens only locally on the server |
-| `OPENCLAW_WEBHOOK_URL` | private OpenClaw address over Tailscale |
-| `OPENCLAW_WEBHOOK_SECRET` | secret used when the bridge calls OpenClaw |
-| `OPENCLAW_SESSION_KEY` | recorded in bridge logs only; the OpenClaw webhook route decides the real session |
-| `REQUEST_TIMEOUT_MS` | how long to wait before timing out |
-| `MAX_BODY_BYTES` | maximum request size allowed |
+| `ADDR=127.0.0.1:8080` | The bridge listens **only on localhost**, because Caddy sits in front and proxies to it. A cloud container would use `:8080` instead |
+| `TS_AUTHKEY` | Not needed. Tailscale runs on the VM itself, authenticated in Step 4 — there is no sidecar container to authorise |
+| Where the file lives | This `.env` is on the **server**, at `/opt/openclaw-bridge/.env`, not the one in your local checkout |
+
+Generate the two secrets rather than inventing them:
+
+```bash
+openssl rand -hex 32   # BRIDGE_API_KEY
+openssl rand -hex 32   # OPENCLAW_WEBHOOK_SECRET, must match OpenClaw's own .env
+```
+
+Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
+unauthenticated requests from anyone who finds the URL.
 
 ---
 
@@ -478,14 +493,30 @@ gcloud services enable run.googleapis.com \
   secretmanager.googleapis.com
 ```
 
-Now store the two secrets:
+**Fill in `.env` first** — it is the single source of truth for every value below.
+See [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) for what each
+setting means and how to generate `BRIDGE_API_KEY`.
 
 ```bash
-printf '%s' 'tskey-REPLACE-WITH-YOUR-KEY' \
-  | gcloud secrets create tailscale-authkey --data-file=-
+set -a; . ./.env; set +a
 
-printf '%s' 'replace-with-a-long-random-secret' \
+: "${OPENCLAW_WEBHOOK_URL:?set it in .env}"
+: "${OPENCLAW_WEBHOOK_SECRET:?set it in .env}"
+: "${BRIDGE_API_KEY:?set it in .env}"
+: "${TS_AUTHKEY:?set it in .env}"
+```
+
+Now store the secrets, taking two of them straight from `.env`:
+
+```bash
+printf '%s' "$OPENCLAW_WEBHOOK_SECRET" \
   | gcloud secrets create openclaw-webhook-secret --data-file=-
+
+printf '%s' "$BRIDGE_API_KEY" \
+  | gcloud secrets create bridge-api-key --data-file=-
+
+printf '%s' "$TS_AUTHKEY" \
+  | gcloud secrets create tailscale-authkey --data-file=-
 ```
 
 Let Cloud Run read them:
@@ -494,7 +525,7 @@ Let Cloud Run read them:
 PROJECT_NUMBER="$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')"
 SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
-for SECRET in tailscale-authkey openclaw-webhook-secret; do
+for SECRET in tailscale-authkey openclaw-webhook-secret bridge-api-key; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
     --member="serviceAccount:${SERVICE_ACCOUNT}" \
     --role="roles/secretmanager.secretAccessor"
@@ -651,13 +682,14 @@ gcloud run deploy openclaw-bridge \
   --max-instances 3 \
   --memory 256Mi \
   --set-env-vars 'ADDR=:8080' \
-  --set-env-vars 'OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt' \
-  --set-env-vars 'OPENCLAW_SESSION_KEY=agent:main:main' \
-  --set-env-vars 'REQUEST_TIMEOUT_MS=30000' \
+  --set-env-vars "OPENCLAW_WEBHOOK_URL=$OPENCLAW_WEBHOOK_URL" \
+  --set-env-vars "OPENCLAW_SESSION_KEY=$OPENCLAW_SESSION_KEY" \
+  --set-env-vars "REQUEST_TIMEOUT_MS=$REQUEST_TIMEOUT_MS" \
   --set-env-vars 'TAILSCALE_ENABLED=true' \
   --set-env-vars 'TAILSCALE_PROXY_ADDR=127.0.0.1:1055' \
   --set-secrets 'TAILSCALE_AUTHKEY=tailscale-authkey:latest' \
-  --set-secrets 'OPENCLAW_WEBHOOK_SECRET=openclaw-webhook-secret:latest'
+  --set-secrets 'OPENCLAW_WEBHOOK_SECRET=openclaw-webhook-secret:latest' \
+  --set-secrets 'BRIDGE_API_KEY=bridge-api-key:latest'
 ```
 
 Replace the `OPENCLAW_WEBHOOK_URL` value with your real OpenClaw tailnet address.

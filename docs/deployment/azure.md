@@ -237,6 +237,7 @@ ADDR=127.0.0.1:8080
 OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
 OPENCLAW_WEBHOOK_SECRET=replace-with-a-long-random-secret
 OPENCLAW_SESSION_KEY=agent:main:main
+BRIDGE_API_KEY=replace-with-a-long-random-secret
 REQUEST_TIMEOUT_MS=30000
 MAX_BODY_BYTES=1048576
 EOF
@@ -244,14 +245,28 @@ EOF
 
 ### What each line means
 
-| Setting | Meaning |
+Every setting is explained once in
+**[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
+which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_WEBHOOK_SECRET` are two
+different secrets rather than one.
+
+Three things are specific to this VM setup:
+
+| Setting | Why it differs here |
 |---|---|
-| `ADDR=127.0.0.1:8080` | bridge listens only locally on the server |
-| `OPENCLAW_WEBHOOK_URL` | private OpenClaw address over Tailscale |
-| `OPENCLAW_WEBHOOK_SECRET` | secret used when the bridge calls OpenClaw |
-| `OPENCLAW_SESSION_KEY` | recorded in bridge logs only; the OpenClaw webhook route decides the real session |
-| `REQUEST_TIMEOUT_MS` | how long to wait before timing out |
-| `MAX_BODY_BYTES` | maximum request size allowed |
+| `ADDR=127.0.0.1:8080` | The bridge listens **only on localhost**, because Caddy sits in front and proxies to it. A cloud container would use `:8080` instead |
+| `TS_AUTHKEY` | Not needed. Tailscale runs on the VM itself, authenticated in Step 4 — there is no sidecar container to authorise |
+| Where the file lives | This `.env` is on the **server**, at `/opt/openclaw-bridge/.env`, not the one in your local checkout |
+
+Generate the two secrets rather than inventing them:
+
+```bash
+openssl rand -hex 32   # BRIDGE_API_KEY
+openssl rand -hex 32   # OPENCLAW_WEBHOOK_SECRET, must match OpenClaw's own .env
+```
+
+Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
+unauthenticated requests from anyone who finds the URL.
 
 ---
 
@@ -463,6 +478,10 @@ Container Apps starts and stops your containers automatically, so Tailscale must
 3. Turn on **Ephemeral**.
 4. Turn on **Reusable**.
 5. Click **Generate key** and copy the value. It starts with `tskey-`.
+6. Put it in your `.env` as `TS_AUTHKEY`.
+
+This is a **different device** from the machine running OpenClaw, so it needs its own key.
+Do not reuse that machine's.
 
 #### Why ephemeral and reusable?
 
@@ -641,7 +660,20 @@ IMAGE="${ACR_SERVER}/bridge:v1"
 
 Sidecars cannot be described with command line flags alone, so the app is defined in a YAML file.
 
-First collect the values the file needs. Typing the secrets with `read -s` keeps them out of your shell history:
+**Fill in `.env` first** — it is the single source of truth for every value below.
+See [Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) for what each
+setting means and how to generate `BRIDGE_API_KEY`.
+
+```bash
+set -a; . ./.env; set +a
+
+: "${OPENCLAW_WEBHOOK_URL:?set it in .env}"
+: "${OPENCLAW_WEBHOOK_SECRET:?set it in .env}"
+: "${BRIDGE_API_KEY:?set it in .env}"
+: "${TS_AUTHKEY:?set it in .env}"
+```
+
+Then collect the two values that are specific to this deployment:
 
 ```bash
 ENV_ID="$(az containerapp env show --name openclaw-env --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
@@ -649,33 +681,7 @@ ENV_ID="$(az containerapp env show --name openclaw-env --resource-group "$RESOUR
 # Option A (GHCR): set IMAGE yourself.
 IMAGE="ghcr.io/YOUR_GITHUB_USER/openclaw-chatgpt-bridge:v1"
 # Option B (ACR): IMAGE and ACR_* were already set at the end of Step 3.
-
-read -rsp 'Tailscale auth key: ' TS_AUTHKEY_VALUE; echo
-read -rsp 'OpenClaw webhook secret: ' OPENCLAW_SECRET_VALUE; echo
-
-OPENCLAW_URL='http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt'
 ```
-
-The webhook secret must be **byte-identical** to the one OpenClaw resolves. Compare hashes
-rather than eyeballing them, and remember that a value containing spaces, quotes, or
-non-ASCII characters will not survive an HTTP header:
-
-```bash
-printf '%s' "$OPENCLAW_SECRET_VALUE" | shasum -a 256 | cut -c1-16
-grep '^OPENCLAW_WEBHOOK_SECRET=' ~/.openclaw/.env | cut -d= -f2- | tr -d '\n' | shasum -a 256 | cut -c1-16
-```
-
-Use `cut -d= -f2-`, not `-f2`, or a secret containing `=` is silently truncated.
-
-Replace `OPENCLAW_URL` with your real OpenClaw tailnet address.
-
-If OpenClaw sits behind `tailscale serve`, the address is **https with no port**. Check it with `tailscale serve status` on the OpenClaw machine, and use that form instead:
-
-```bash
-OPENCLAW_URL='https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt'
-```
-
-The bridge image installs `ca-certificates` so it can verify that certificate.
 
 Now write the file. Both versions below are **complete** — copy the one matching the option
 you chose in Step 3, rather than assembling pieces. They differ only in the `registries`
@@ -702,9 +708,11 @@ properties:
       allowInsecure: false
     secrets:
       - name: tailscale-authkey
-        value: ${TS_AUTHKEY_VALUE}
+        value: ${TS_AUTHKEY}
       - name: openclaw-webhook-secret
-        value: ${OPENCLAW_SECRET_VALUE}
+        value: ${OPENCLAW_WEBHOOK_SECRET}
+      - name: bridge-api-key
+        value: ${BRIDGE_API_KEY}
   template:
     containers:
       - name: bridge
@@ -716,9 +724,9 @@ properties:
           - name: ADDR
             value: ":8080"
           - name: OPENCLAW_WEBHOOK_URL
-            value: "${OPENCLAW_URL}"
+            value: "${OPENCLAW_WEBHOOK_URL}"
           - name: OPENCLAW_SESSION_KEY
-            value: "agent:main:main"
+            value: "${OPENCLAW_SESSION_KEY}"
           - name: REQUEST_TIMEOUT_MS
             value: "30000"
           - name: TAILSCALE_ENABLED
@@ -733,6 +741,8 @@ properties:
             value: "127.0.0.1,localhost"
           - name: OPENCLAW_WEBHOOK_SECRET
             secretRef: openclaw-webhook-secret
+          - name: BRIDGE_API_KEY
+            secretRef: bridge-api-key
       - name: tailscale
         image: docker.io/tailscale/tailscale:stable
         resources:
@@ -786,9 +796,11 @@ properties:
       allowInsecure: false
     secrets:
       - name: tailscale-authkey
-        value: ${TS_AUTHKEY_VALUE}
+        value: ${TS_AUTHKEY}
       - name: openclaw-webhook-secret
-        value: ${OPENCLAW_SECRET_VALUE}
+        value: ${OPENCLAW_WEBHOOK_SECRET}
+      - name: bridge-api-key
+        value: ${BRIDGE_API_KEY}
       - name: registry-password
         value: ${ACR_PASSWORD}
     registries:
@@ -806,9 +818,9 @@ properties:
           - name: ADDR
             value: ":8080"
           - name: OPENCLAW_WEBHOOK_URL
-            value: "${OPENCLAW_URL}"
+            value: "${OPENCLAW_WEBHOOK_URL}"
           - name: OPENCLAW_SESSION_KEY
-            value: "agent:main:main"
+            value: "${OPENCLAW_SESSION_KEY}"
           - name: REQUEST_TIMEOUT_MS
             value: "30000"
           - name: TAILSCALE_ENABLED
@@ -823,6 +835,8 @@ properties:
             value: "127.0.0.1,localhost"
           - name: OPENCLAW_WEBHOOK_SECRET
             secretRef: openclaw-webhook-secret
+          - name: BRIDGE_API_KEY
+            secretRef: bridge-api-key
       - name: tailscale
         image: docker.io/tailscale/tailscale:stable
         resources:
@@ -997,6 +1011,49 @@ If that first slow call ever causes a ChatGPT Action to time out, you have two o
 - set `minReplicas: 1`, which keeps one copy running. Idle replicas are billed at a reduced rate, but this **will use up your free grant** and eventually cost money.
 
 ---
+
+### Changing a secret later
+
+Secrets live in two places and **both** must be updated, or the bridge and its callers stop
+agreeing. Edit `.env` first, then push it:
+
+```bash
+set -a; . ./.env; set +a
+
+az containerapp secret set \
+  --name openclaw-bridge --resource-group openclaw-bridge \
+  --secrets "bridge-api-key=$BRIDGE_API_KEY" \
+            "openclaw-webhook-secret=$OPENCLAW_WEBHOOK_SECRET" \
+            "tailscale-authkey=$TS_AUTHKEY"
+```
+
+**Updating the secret is not enough.** The container reads secrets at start, so it keeps
+serving the old value until the revision restarts:
+
+```bash
+az containerapp revision restart \
+  --name openclaw-bridge --resource-group openclaw-bridge \
+  --revision "$(az containerapp show --name openclaw-bridge \
+      --resource-group openclaw-bridge --query properties.latestRevisionName -o tsv)"
+```
+
+Then confirm the new value is live:
+
+```bash
+BRIDGE="https://$(az containerapp show --name openclaw-bridge --resource-group openclaw-bridge \
+  --query 'properties.configuration.ingress.fqdn' -o tsv)"
+
+curl -s -o /dev/null -w "no key:  %{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
+  -H 'content-type: application/json' -d '{"action":"get_flow","flowId":"probe"}'
+curl -s -o /dev/null -w "new key: %{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
+  -H 'content-type: application/json' -H "api_key: $BRIDGE_API_KEY" \
+  -d '{"action":"get_flow","flowId":"probe"}'
+```
+
+`401` then `200` is correct. If the new key returns `401`, the restart did not take effect.
+
+Changing `BRIDGE_API_KEY` also means updating the credential saved in the ChatGPT Action —
+see [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
 
 ### Things that went wrong for us
 

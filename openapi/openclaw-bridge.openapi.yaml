@@ -6,6 +6,8 @@ info:
     OpenAPI schema for a Custom GPT Action that calls the bridge service.
 servers:
   - url: https://bridge.example.com
+security:
+  - api_key: []
 paths:
   /v1/openclaw:
     post:
@@ -190,6 +192,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BridgeError"
+        "401":
+          description: >
+            The bridge's own API key was missing or wrong. This is the bridge
+            rejecting the caller, and is unrelated to the separate secret the
+            bridge uses when it talks to OpenClaw.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+              examples:
+                missingKey:
+                  summary: No credential presented
+                  value:
+                    ok: false
+                    error: unauthorized
         default:
           description: >
             OpenClaw returned a non-2xx status and the bridge mirrored it. The
@@ -210,6 +227,17 @@ paths:
                       message: unauthorized
 
 components:
+  securitySchemes:
+    api_key:
+      type: apiKey
+      in: header
+      name: api_key
+      description: >
+        Shared secret between the Custom GPT and the bridge, set as BRIDGE_API_KEY
+        on the bridge. In the ChatGPT Action builder choose Authentication ->
+        API Key -> Auth Type "Custom", and set the custom header name to api_key.
+        The bridge also accepts the same value as Authorization: Bearer <key>,
+        which is handy for curl.
   schemas:
     UpstreamBody:
       description: >

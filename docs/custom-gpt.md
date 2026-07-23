@@ -69,48 +69,81 @@ After importing you should see one available action: `sendToOpenClawBridge`.
 
 ---
 
-## Step 3 — Understand what you just exposed
+## Step 3 — Set the API key
 
-Read this before going further.
+The bridge attaches the OpenClaw webhook secret itself, so **without an inbound key anyone
+who knows your bridge URL can create, modify, and cancel TaskFlows in your OpenClaw.** The
+webhook secret protects OpenClaw from arbitrary callers; it does nothing to protect the
+bridge.
 
-**The bridge does not authenticate incoming requests.** It attaches the OpenClaw webhook
-secret itself, so anyone who knows your bridge URL can create, modify, and cancel TaskFlows
-in your OpenClaw. The webhook secret protects OpenClaw from arbitrary callers; it does not
-protect the bridge.
+Set `BRIDGE_API_KEY` on the bridge and give the same value to the Action.
 
-You can confirm this against your own deployment:
+### On the bridge
+
+Set `BRIDGE_API_KEY` in your `.env` — see
+[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup) for how to generate
+one and why it matters. Then deploy that value. How depends on where the bridge runs — see the
+[deployment guide]({{ '/deployment/free-tier.html' | relative_url }}) for your platform,
+which reads the value straight out of `.env`.
+
+If the variable is unset the bridge still starts, but it logs a warning at boot and accepts
+unauthenticated requests. That is a deliberate choice you can make, not an accident you can
+drift into unaware.
+
+### In the Action
+
+1. In the Action editor, open **Authentication**.
+2. Choose **API Key**.
+3. Set **Auth Type** to **Custom**.
+4. Set the **Custom Header Name** to `api_key`.
+5. Paste the same value you set as `BRIDGE_API_KEY`.
+
+The schema already declares this, so the builder should preselect most of it:
+
+```yaml
+security:
+  - api_key: []
+components:
+  securitySchemes:
+    api_key:
+      type: apiKey
+      in: header
+      name: api_key
+```
+
+### Check it worked
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" -X POST https://YOUR-BRIDGE-URL/v1/openclaw \
-  -H 'content-type: application/json' \
+BRIDGE=https://YOUR-BRIDGE-URL
+KEY=your-key
+
+# no credential -> 401
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
+  -H 'content-type: application/json' -d '{"action":"get_flow","flowId":"probe"}'
+
+# with the key -> 200
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
+  -H 'content-type: application/json' -H "api_key: $KEY" \
   -d '{"action":"get_flow","flowId":"probe"}'
 ```
 
-A `200` with no credentials means the endpoint is open to anyone who finds the URL.
+`401` then `200` means the endpoint is closed and your key works. Two `200`s mean the key is
+not set on the bridge and it is still open.
 
-### How exposed is that, really?
+Health endpoints stay open on purpose — container platforms probe `/healthz` and `/readyz`
+without credentials, so requiring a key there would break deployment.
 
-| Factor | Reality |
+### What the key does and does not protect
+
+| | |
 |---|---|
-| Can a stranger find the URL? | Container Apps and Cloud Run hostnames are long and random, and not indexed. Obscurity, not security |
-| What can a caller do? | Everything the webhook route's `sessionKey` owns — create, mutate, cancel flows |
-| What can they *not* do? | Reach OpenClaw directly, read your tailnet, or use the webhook secret elsewhere |
+| Stops a stranger who finds your bridge URL | Yes |
+| Stops someone who has the key | No — treat it like a password |
+| Protects OpenClaw if the bridge is compromised | No. Bind the webhook route to a narrow session so the blast radius is small |
 
-### Options, weakest to strongest
-
-1. **Accept it.** Reasonable for a personal, unpublished GPT on an obscure URL, and it is
-   where you land by default. Know that you are choosing it.
-2. **Set an API key in the Action.** Under **Authentication**, choose **API Key**, pick
-   *Bearer* or a custom header, and set a long random value. ChatGPT will send it on every
-   call. **This only helps if the bridge checks it** — today it does not, so you must add an
-   inbound token check to the bridge for this to be worth anything.
-3. **Put a gateway in front.** An API gateway or reverse proxy that rejects requests without
-   the right header before they reach the bridge. Most work, no bridge changes.
-
-Bind the webhook route to a narrow session either way, so a leaked URL cannot touch your
-main agent's flows. See [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}).
-
----
+Rotating it means updating both sides: the bridge's environment variable **and** the Action's
+saved credential. The bridge reads it at startup, so redeploy or restart the revision after
+changing it.
 
 ## Step 4 — Give the GPT instructions
 
@@ -150,8 +183,10 @@ ERRORS
 - "Unrecognized keys" means you sent a field that action does not accept. Remove it
   and retry with only the allowed fields.
 - "expectedRevision is required" means you skipped get_flow. Call it, then retry.
-- A 401 means the bridge and OpenClaw secrets disagree. Tell the user plainly and do
-  not retry, because retrying cannot fix it.
+- A 401 with body {"error":"unauthorized"} means the Action's api_key is missing or
+  wrong. A 401 carrying an upstreamStatus means OpenClaw rejected the bridge's own
+  secret. Either way, tell the user plainly and do not retry: retrying cannot fix a
+  credential mismatch.
 - Report failures exactly as returned. Never claim work succeeded when it did not.
 
 STYLE
@@ -222,7 +257,8 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 | Talks about calling the action but nothing happens | The action was saved without being imported cleanly | Re-import the schema and confirm `sendToOpenClawBridge` is listed |
 | `Unrecognized keys` | The model added a field the action does not accept | Strengthen the FIELD RULES section of the instructions |
 | `expectedRevision is required` | The model skipped `get_flow` | Strengthen the EXPECTED REVISION section |
-| `401` from the bridge | Bridge and OpenClaw secrets disagree | See [Troubleshooting]({{ '/troubleshooting.html' | relative_url }}) — usually a missed restart |
+| `401`, body is `{"error":"unauthorized"}` | The Action's `api_key` is missing or wrong | Re-check Step 3: the Action credential must equal `BRIDGE_API_KEY` on the bridge |
+| `401` with an `upstreamStatus` field | OpenClaw rejected the bridge's own webhook secret | See [Troubleshooting]({{ '/troubleshooting.html' | relative_url }}) — usually a missed restart |
 | First call each morning fails, later ones work | Cold start | Retry, or run with `minReplicas: 1` and leave the free tier |
 
 ---
@@ -233,7 +269,8 @@ The rule of thumb: **ChatGPT decides and reviews, OpenClaw executes.**
 - [ ] GPT created
 - [ ] Schema imported, `sendToOpenClawBridge` visible
 - [ ] `servers:` URL points at **your** bridge
-- [ ] You have decided, deliberately, how exposed the bridge endpoint is
+- [ ] `BRIDGE_API_KEY` set on the bridge, same value saved in the Action
+- [ ] Unauthenticated request returns `401`, authenticated returns `200`
 - [ ] Instructions pasted, including the expectedRevision rule
 - [ ] `get_flow` works from a prompt
 - [ ] `create_flow` returns a flowId

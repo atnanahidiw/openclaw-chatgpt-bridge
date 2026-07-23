@@ -6,17 +6,22 @@
 //	main       -> start the server, shut down cleanly on SIGINT/SIGTERM
 //	config     -> read every environment variable once, at startup
 //	routing    -> /healthz, /readyz, /version, /v1/openclaw
-//	handling   -> decode, normalize, validate, forward, respond
+//	handling   -> authenticate, decode, normalize, validate, forward, respond
+//	auth       -> the shared api_key callers must present
 //	payload    -> the request contract: allowed actions and required fields
 //	forwarding -> the single hop to OpenClaw
 //	helpers    -> JSON encode/decode plumbing
 //
-// The service is stateless: no database, no sessions, no auth of its own.
+// The service is stateless: no database, no sessions. Inbound callers are
+// authenticated with a shared key when BRIDGE_API_KEY is set; the separate
+// OPENCLAW_WEBHOOK_SECRET is what the bridge presents to OpenClaw.
 package main
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -44,6 +49,14 @@ var (
 
 func main() {
 	cfg := loadConfig()
+
+	// The bridge attaches the OpenClaw webhook secret itself, so without an
+	// inbound key anyone who learns the URL can drive TaskFlows. Say so loudly
+	// rather than failing silently open.
+	if cfg.bridgeAPIKey == "" {
+		log.Printf("WARNING: BRIDGE_API_KEY is not set; POST /v1/openclaw accepts unauthenticated requests")
+	}
+
 	mux := newMux(cfg)
 	srv := &http.Server{
 		Addr:              cfg.addr,
@@ -97,6 +110,10 @@ type config struct {
 	openclawSecret     string
 	sessionKey         string
 
+	// Shared secret callers must present on /v1/openclaw. Empty disables the
+	// check, which leaves the endpoint open to anyone who knows the URL.
+	bridgeAPIKey string
+
 	tailscaleEnabled   bool
 	tailscaleProxyAddr string
 
@@ -118,6 +135,7 @@ func loadConfig() config {
 		openclawWebhookURL: strings.TrimSpace(os.Getenv("OPENCLAW_WEBHOOK_URL")),
 		openclawSecret:     strings.TrimSpace(os.Getenv("OPENCLAW_WEBHOOK_SECRET")),
 		sessionKey:         strings.TrimSpace(os.Getenv("OPENCLAW_SESSION_KEY")),
+		bridgeAPIKey:       strings.TrimSpace(os.Getenv("BRIDGE_API_KEY")),
 
 		tailscaleEnabled:   strings.EqualFold(strings.TrimSpace(os.Getenv("TAILSCALE_ENABLED")), "true"),
 		tailscaleProxyAddr: envString("TAILSCALE_PROXY_ADDR", "127.0.0.1:1055"),
@@ -258,6 +276,19 @@ func handleOpenClaw(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 
+	// Authenticate before anything else, so an unauthenticated caller learns
+	// nothing about how the bridge is configured.
+	if !authorizeRequest(r, cfg.bridgeAPIKey) {
+		statusCode = http.StatusUnauthorized
+		errMsg = "unauthorized"
+		w.Header().Set("www-authenticate", `Bearer realm="openclaw-bridge"`)
+		writeJSON(w, statusCode, map[string]any{
+			"ok":    false,
+			"error": errMsg,
+		})
+		return
+	}
+
 	if cfg.openclawWebhookURL == "" {
 		statusCode = http.StatusInternalServerError
 		errMsg = "OPENCLAW_WEBHOOK_URL is not set"
@@ -345,6 +376,56 @@ func handleOpenClaw(w http.ResponseWriter, r *http.Request, cfg config) {
 		"upstreamStatus": upstream.Status,
 		"upstreamBody":   upstream.Body,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Inbound authentication
+//
+// The OpenAPI schema declares an apiKey scheme carrying the secret in an
+// `api_key` header, which is what the Custom GPT sends:
+//
+//	Authentication = "API Key", Custom header name "api_key" -> api_key: <key>
+//
+// Authorization: Bearer <key> is also accepted, purely so the endpoint is easy
+// to call from curl.
+//
+// Only /v1/openclaw is protected. The health endpoints stay open because
+// container platforms probe them without credentials.
+// ---------------------------------------------------------------------------
+
+// authorizeRequest reports whether the caller presented the expected key.
+// An empty expected key disables the check entirely.
+func authorizeRequest(r *http.Request, expected string) bool {
+	if expected == "" {
+		return true
+	}
+	return secretsEqual(presentedKey(r), expected)
+}
+
+// presentedKey pulls the caller's key out of whichever header carries it,
+// preferring the one the OpenAPI schema declares.
+func presentedKey(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("api_key")); v != "" {
+		return v
+	}
+
+	raw := strings.TrimSpace(r.Header.Get("authorization"))
+	if raw == "" {
+		return ""
+	}
+	// Split on the first space so a missing or odd scheme cannot panic.
+	if scheme, token, ok := strings.Cut(raw, " "); ok && strings.EqualFold(scheme, "bearer") {
+		return strings.TrimSpace(token)
+	}
+	return raw
+}
+
+// secretsEqual compares in constant time. Both sides are hashed first so the
+// comparison is over fixed-length input and cannot leak the expected length.
+func secretsEqual(got, want string) bool {
+	g := sha256.Sum256([]byte(got))
+	w := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(g[:], w[:]) == 1
 }
 
 // ---------------------------------------------------------------------------

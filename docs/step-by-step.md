@@ -48,7 +48,11 @@ If not, clone it first, then come back to this folder.
 
 ---
 
-## 2. Create your `.env` file
+## 2. Configure `.env` {#env-setup}
+
+**`.env` is the single source of truth for this project.** Every deployment guide reads
+from it, so you fill these in once and the same values end up on your laptop, in your
+container, and in your cloud provider's secret store.
 
 Copy the example file:
 
@@ -56,28 +60,100 @@ Copy the example file:
 cp .env.example .env
 ```
 
-Open `.env` and set these values:
+Then open it and set the values below. `.env` is gitignored — never commit it.
 
-- `OPENCLAW_WEBHOOK_URL`
-- `OPENCLAW_WEBHOOK_SECRET`
-- `OPENCLAW_SESSION_KEY`
+### The values
 
-### What each one means
+| Setting | Required | What to put there |
+|---|---|---|
+| `ADDR` | no | Address the bridge binds. Defaults to `:8080`. **`PORT` is read but not used for binding** |
+| `REQUEST_TIMEOUT_MS` | no | How long to wait for OpenClaw. Default `30000` |
+| `MAX_BODY_BYTES` | no | Maximum request size. Default `1048576` |
+| `OPENCLAW_WEBHOOK_URL` | **yes** | The OpenClaw webhook address. From [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}) |
+| `OPENCLAW_WEBHOOK_SECRET` | **yes** | Shared secret the bridge presents **to** OpenClaw. Must match what OpenClaw resolves |
+| `OPENCLAW_SESSION_KEY` | no | Recorded in bridge logs only. OpenClaw's webhook route decides the real session |
+| `BRIDGE_API_KEY` | strongly | Shared secret callers must present **to** the bridge. See below |
+| `TS_AUTHKEY` | cloud only | Tailscale key for the cloud sidecar. Not read by the bridge itself |
 
-| Setting | What to put there |
-|---|---|
-| `OPENCLAW_WEBHOOK_URL` | The OpenClaw webhook address |
-| `OPENCLAW_WEBHOOK_SECRET` | A long secret shared between the bridge and OpenClaw |
-| `OPENCLAW_SESSION_KEY` | Recorded in bridge logs only. The OpenClaw webhook route is bound to a session by OpenClaw config, so the bridge cannot choose one |
+### The two secrets are different things
 
-### Important note about private OpenClaw
+This trips people up, because both are "the secret":
 
-If OpenClaw is private, point `OPENCLAW_WEBHOOK_URL` to the **Tailscale hostname** or **Tailscale IP address**.
-For example:
+```text
+Custom GPT --[ BRIDGE_API_KEY ]--> bridge --[ OPENCLAW_WEBHOOK_SECRET ]--> OpenClaw
+```
+
+- `BRIDGE_API_KEY` protects **the bridge** from strangers who find its URL.
+- `OPENCLAW_WEBHOOK_SECRET` proves the bridge's identity **to OpenClaw**.
+
+They should be different values. Reusing one for both means a leak of either compromises
+both hops.
+
+### Setting `BRIDGE_API_KEY`
+
+Generate one rather than inventing it — a memorable string is guessable in a way its
+length does not suggest:
+
+```bash
+openssl rand -hex 32
+```
+
+Without it the bridge still starts, logs a warning, and **accepts unauthenticated
+requests**: anyone who knows the URL can drive your OpenClaw TaskFlows. That is a choice
+you can make deliberately, not one to drift into.
+
+The same value goes in the Custom GPT Action as an `api_key` header — see
+[Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
+
+### If OpenClaw is private
+
+Point `OPENCLAW_WEBHOOK_URL` at the **Tailscale hostname** or IP, never `localhost` — Go
+never sends loopback addresses through a proxy, so the bridge would silently skip Tailscale:
 
 ```text
 http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
 ```
+
+Behind `tailscale serve` it is **https with no port**. Check with `tailscale serve status`:
+
+```text
+https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+```
+
+### Loading it {#loading-env}
+
+Every deployment guide starts by sourcing `.env`, so its values are available to the
+commands that follow:
+
+```bash
+set -a; . ./.env; set +a
+```
+
+Then check nothing important is empty. This fails loudly now rather than producing a
+container that starts and misbehaves later:
+
+```bash
+: "${OPENCLAW_WEBHOOK_URL:?set it in .env}"
+: "${OPENCLAW_WEBHOOK_SECRET:?set it in .env}"
+: "${BRIDGE_API_KEY:?set it in .env}"
+echo "core values present"
+```
+
+Deploying to a cloud platform? Add `: "${TS_AUTHKEY:?set it in .env}"` — an unset
+Tailscale key produces a container that starts but never joins your tailnet, which only
+surfaces later as `/readyz` failing.
+
+### Confirming the webhook secret matches
+
+A mismatch here is the most common cause of a healthy-looking deployment that returns
+`401`. Compare hashes rather than reading the values:
+
+```bash
+printf '%s' "$OPENCLAW_WEBHOOK_SECRET" | shasum -a 256 | cut -c1-16
+grep '^OPENCLAW_WEBHOOK_SECRET=' ~/.openclaw/.env | cut -d= -f2- | tr -d '\n' | shasum -a 256 | cut -c1-16
+```
+
+Use `cut -d= -f2-`, not `-f2`, or a secret containing `=` is silently truncated.
 
 ---
 

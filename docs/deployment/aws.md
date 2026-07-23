@@ -225,6 +225,7 @@ ADDR=127.0.0.1:8080
 OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt
 OPENCLAW_WEBHOOK_SECRET=replace-with-a-long-random-secret
 OPENCLAW_SESSION_KEY=agent:main:main
+BRIDGE_API_KEY=replace-with-a-long-random-secret
 REQUEST_TIMEOUT_MS=30000
 MAX_BODY_BYTES=1048576
 EOF
@@ -232,14 +233,28 @@ EOF
 
 ### What each line means
 
-| Setting | Meaning |
+Every setting is explained once in
+**[Configure `.env`]({{ '/step-by-step.html' | relative_url }}#env-setup)** — what it does,
+which are required, and why `BRIDGE_API_KEY` and `OPENCLAW_WEBHOOK_SECRET` are two
+different secrets rather than one.
+
+Three things are specific to this VM setup:
+
+| Setting | Why it differs here |
 |---|---|
-| `ADDR=127.0.0.1:8080` | bridge listens only locally on the server |
-| `OPENCLAW_WEBHOOK_URL` | private OpenClaw address over Tailscale |
-| `OPENCLAW_WEBHOOK_SECRET` | secret used when the bridge calls OpenClaw |
-| `OPENCLAW_SESSION_KEY` | recorded in bridge logs only; the OpenClaw webhook route decides the real session |
-| `REQUEST_TIMEOUT_MS` | how long to wait before timing out |
-| `MAX_BODY_BYTES` | maximum request size allowed |
+| `ADDR=127.0.0.1:8080` | The bridge listens **only on localhost**, because Caddy sits in front and proxies to it. A cloud container would use `:8080` instead |
+| `TS_AUTHKEY` | Not needed. Tailscale runs on the VM itself, authenticated in Step 4 — there is no sidecar container to authorise |
+| Where the file lives | This `.env` is on the **server**, at `/opt/openclaw-bridge/.env`, not the one in your local checkout |
+
+Generate the two secrets rather than inventing them:
+
+```bash
+openssl rand -hex 32   # BRIDGE_API_KEY
+openssl rand -hex 32   # OPENCLAW_WEBHOOK_SECRET, must match OpenClaw's own .env
+```
+
+Leave `BRIDGE_API_KEY` unset and the bridge starts anyway, logs a warning, and accepts
+unauthenticated requests from anyone who finds the URL.
 
 ---
 

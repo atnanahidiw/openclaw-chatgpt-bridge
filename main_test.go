@@ -255,6 +255,138 @@ func TestNotifyPolicyOnlySentWhereAccepted(t *testing.T) {
 	}
 }
 
+func TestAuthorizeRequest(t *testing.T) {
+	const key = "s3cr3t-bridge-key"
+
+	newReq := func(headers map[string]string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/openclaw", nil)
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+
+	cases := []struct {
+		name     string
+		expected string
+		headers  map[string]string
+		want     bool
+	}{
+		{"no key configured allows anything", "", nil, true},
+
+		// The header the OpenAPI schema declares, so this is what the GPT sends.
+		{"api_key header", key, map[string]string{"api_key": key}, true},
+		{"wrong api_key header", key, map[string]string{"api_key": "nope"}, false},
+
+		// Accepted fallback, for curl.
+		{"bearer token", key, map[string]string{"Authorization": "Bearer " + key}, true},
+		{"bearer is case-insensitive", key, map[string]string{"Authorization": "bearer " + key}, true},
+		{"raw authorization value", key, map[string]string{"Authorization": key}, true},
+
+		{"missing credential", key, nil, false},
+		{"wrong key", key, map[string]string{"Authorization": "Bearer nope"}, false},
+		{"empty bearer token", key, map[string]string{"Authorization": "Bearer "}, false},
+		{"scheme only", key, map[string]string{"Authorization": "Bearer"}, false},
+		{"key as prefix is not enough", key, map[string]string{"Authorization": "Bearer " + key + "extra"}, false},
+
+		// api_key takes precedence, so a bad one is not rescued by a good Bearer.
+		{"api_key wins over authorization", key, map[string]string{
+			"api_key": "nope", "Authorization": "Bearer " + key}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authorizeRequest(newReq(tc.headers), tc.expected); got != tc.want {
+				t.Fatalf("authorizeRequest = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The endpoint must be closed when a key is configured, and the rejection must
+// not depend on the rest of the request being valid.
+func TestOpenClawEndpointRequiresAPIKey(t *testing.T) {
+	var upstreamHits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config{
+		serviceName:        "openclaw-chatgpt-bridge",
+		openclawWebhookURL: upstream.URL,
+		bridgeAPIKey:       "expected-key",
+		requestTimeout:     2 * time.Second,
+		maxBodyBytes:       1024 * 1024,
+		httpClient:         upstream.Client(),
+	}
+	mux := newMux(cfg)
+
+	body := `{"action":"create_flow","goal":"x"}`
+
+	t.Run("rejects without a key", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
+		req.Header.Set("content-type", "application/json")
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", rec.Code)
+		}
+		if got := rec.Header().Get("www-authenticate"); got == "" {
+			t.Errorf("expected a www-authenticate challenge header")
+		}
+		if upstreamHits != 0 {
+			t.Errorf("unauthenticated request reached OpenClaw %d times", upstreamHits)
+		}
+	})
+
+	t.Run("accepts with the key", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("Authorization", "Bearer expected-key")
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if upstreamHits != 1 {
+			t.Errorf("upstream hits = %d, want 1", upstreamHits)
+		}
+	})
+
+	// A bad key must fail before the bridge reveals configuration problems.
+	t.Run("auth is checked before configuration", func(t *testing.T) {
+		broken := newMux(config{serviceName: "x", bridgeAPIKey: "expected-key"}) // no webhook URL
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/openclaw", strings.NewReader(body))
+		mux2 := broken
+		mux2.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (not a 500 leaking config state)", rec.Code)
+		}
+	})
+}
+
+// Platform probes have no credentials, so these must stay open.
+func TestHealthEndpointsStayOpenWithAPIKeySet(t *testing.T) {
+	mux := newMux(config{serviceName: "openclaw-chatgpt-bridge", bridgeAPIKey: "expected-key"})
+
+	for _, path := range []string{"/healthz", "/readyz", "/version"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200", path, rec.Code)
+			}
+		})
+	}
+}
+
 func TestRejectInvalidAction(t *testing.T) {
 	normalized := normalizeInboundPayload(map[string]any{
 		"action": "bogus",

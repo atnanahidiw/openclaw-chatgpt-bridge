@@ -110,6 +110,34 @@ The rest of this page covers problems with a bridge that is already running.
 
 ---
 
+## `401 unauthorized` from the bridge itself
+
+There are **two** different 401s in this system. Tell them apart by the response body.
+
+| Body | Who rejected you | Fix |
+|---|---|---|
+| `{"ok":false,"error":"unauthorized"}` | The **bridge**. Your caller did not present a valid `api_key` | Send `api_key: <BRIDGE_API_KEY>`, or `Authorization: Bearer <key>`. In a Custom GPT this is the Action's API Key credential |
+| `{"ok":false,"error":"OpenClaw returned non-2xx status","upstreamStatus":401,...}` | **OpenClaw**. The bridge reached it but its webhook secret was wrong | Match `OPENCLAW_WEBHOOK_SECRET` to what OpenClaw resolves, and restart both sides |
+
+The first has no `upstreamStatus` field, because the request never left the bridge.
+
+### The key is set but still rejected
+
+`BRIDGE_API_KEY` is read once at startup. Setting it without restarting leaves the old
+value, or none at all, in the running process. Redeploy or restart the revision.
+
+To confirm what the bridge thinks:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BRIDGE/v1/openclaw" \
+  -H 'content-type: application/json' -d '{"action":"get_flow","flowId":"probe"}'
+```
+
+`401` means a key is configured and enforced. `200` means no key is set and the endpoint is
+open to anyone who knows the URL.
+
+---
+
 ## `x509: certificate signed by unknown authority`
 
 This means `OPENCLAW_WEBHOOK_URL` is an `https` address and the bridge container has no CA trust store.
