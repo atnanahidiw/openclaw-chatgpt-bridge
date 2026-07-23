@@ -88,8 +88,17 @@ spec:
               value: {{ ternary "true" "false" .Values.tailscale.acceptDns | quote }}
             - name: TS_STATE_DIR
               value: {{ .Values.tailscale.stateDir | quote }}
+            # --socks5-server and --outbound-http-proxy-listen are tailscaled
+            # flags, so they must not go in TS_EXTRA_ARGS: that variable is
+            # appended to `tailscale up`, which rejects them as unknown.
+            # The image exposes a dedicated variable for each.
+            - name: TS_SOCKS5_SERVER
+              value: "localhost:1055"
+            - name: TS_OUTBOUND_HTTP_PROXY_LISTEN
+              value: "localhost:1055"
+            # TS_EXTRA_ARGS is for `tailscale up` flags only.
             - name: TS_EXTRA_ARGS
-              value: "--socks5-server=localhost:1055 --outbound-http-proxy-listen=localhost:1055 --advertise-tags=tag:k8s"
+              value: "--advertise-tags=tag:k8s"
 {{- else }}
 apiVersion: apps/v1
 kind: Deployment

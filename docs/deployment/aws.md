@@ -237,7 +237,7 @@ EOF
 | `ADDR=127.0.0.1:8080` | bridge listens only locally on the server |
 | `OPENCLAW_WEBHOOK_URL` | private OpenClaw address over Tailscale |
 | `OPENCLAW_WEBHOOK_SECRET` | secret used when the bridge calls OpenClaw |
-| `OPENCLAW_SESSION_KEY` | default session key sent to OpenClaw |
+| `OPENCLAW_SESSION_KEY` | recorded in bridge logs only; the OpenClaw webhook route decides the real session |
 | `REQUEST_TIMEOUT_MS` | how long to wait before timing out |
 | `MAX_BODY_BYTES` | maximum request size allowed |
 

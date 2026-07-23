@@ -32,9 +32,40 @@ jobs:
       - name: Validate YAML files
         run: |
           python - <<'PY'
+          import sys
           import yaml
           from pathlib import Path
 
+
+          class StrictLoader(yaml.SafeLoader):
+              """SafeLoader that rejects duplicate mapping keys.
+
+              yaml.safe_load silently keeps the last of a repeated key, which let a
+              duplicated `goal` property sit in the OpenAPI spec while CI stayed
+              green. Duplicates are always a mistake here, so make them fatal.
+              """
+
+
+          def no_duplicate_keys(loader, node, deep=False):
+              mapping = {}
+              for key_node, value_node in node.value:
+                  key = loader.construct_object(key_node, deep=deep)
+                  if key in mapping:
+                      raise yaml.constructor.ConstructorError(
+                          "while building a mapping",
+                          node.start_mark,
+                          f"duplicate key {key!r}",
+                          key_node.start_mark,
+                      )
+                  mapping[key] = loader.construct_object(value_node, deep=deep)
+              return mapping
+
+
+          StrictLoader.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicate_keys
+          )
+
+          failed = False
           for path in [
               "openapi/openclaw-bridge.openapi.yaml",
               "chart/values.yaml",
@@ -44,9 +75,16 @@ jobs:
               ".github/workflows/pages.yml",
               "docs/_config.yml",
           ]:
-              with open(Path(path), "r", encoding="utf-8") as f:
-                  yaml.safe_load(f)
-              print(f"OK {path}")
+              try:
+                  with open(Path(path), "r", encoding="utf-8") as f:
+                      yaml.load(f, Loader=StrictLoader)
+              except yaml.YAMLError as exc:
+                  failed = True
+                  print(f"FAIL {path}\n{exc}")
+              else:
+                  print(f"OK {path}")
+
+          sys.exit(1 if failed else 0)
           PY
 
       - uses: azure/setup-helm@v4

@@ -5,12 +5,25 @@ title: Google Cloud deployment
 # Google Cloud deployment for the OpenClaw ChatGPT Bridge
 
 This guide is written for a **non-technical person** or an **intern**.
-It gives one simple path:
 
-- use **Google Compute Engine** for the server
-- use **Cloud DNS** for the domain name
-- use **Caddy** for HTTPS
-- use **Tailscale** so the bridge can reach OpenClaw privately
+There are **two ways** to run the bridge on Google Cloud. Pick one:
+
+| | Virtual machine | [Free tier: Cloud Run](#free-tier-deployment-with-cloud-run) |
+|---|---|---|
+| Cost | a few dollars a month | nothing, within the free limits |
+| Domain name | you buy one | not needed |
+| HTTPS | Caddy sets it up | included, automatic |
+| Runs when idle | always on | sleeps, wakes on demand |
+| Where | the rest of this page | [jump to the free tier section](#free-tier-deployment-with-cloud-run) |
+
+**→ Want the free option? [Skip to Free tier deployment with Cloud Run](#free-tier-deployment-with-cloud-run).**
+
+The virtual machine path below uses:
+
+- **Google Compute Engine** for the server
+- **Cloud DNS** for the domain name
+- **Caddy** for HTTPS
+- **Tailscale** so the bridge can reach OpenClaw privately
 
 ## One-sentence explanation
 
@@ -235,7 +248,7 @@ EOF
 | `ADDR=127.0.0.1:8080` | bridge listens only locally on the server |
 | `OPENCLAW_WEBHOOK_URL` | private OpenClaw address over Tailscale |
 | `OPENCLAW_WEBHOOK_SECRET` | secret used when the bridge calls OpenClaw |
-| `OPENCLAW_SESSION_KEY` | default session key sent to OpenClaw |
+| `OPENCLAW_SESSION_KEY` | recorded in bridge logs only; the OpenClaw webhook route decides the real session |
 | `REQUEST_TIMEOUT_MS` | how long to wait before timing out |
 | `MAX_BODY_BYTES` | maximum request size allowed |
 
@@ -370,3 +383,415 @@ OpenClaw itself can stay private behind Tailscale.
 - [ ] Bridge container running
 - [ ] HTTPS works on `https://bridge.yourdomain.com`
 - [ ] Custom GPT action imported
+
+---
+
+## Free tier deployment with Cloud Run
+
+This is the **free** path on Google Cloud. It does not use a virtual machine, a domain name, or Caddy.
+Instead it uses **Cloud Run**, which runs the bridge with Tailscale bundled into the image and hands you an HTTPS URL for nothing.
+
+If you want the always-on virtual machine instead, that is the [first half of this page](#one-sentence-explanation).
+For how Cloud Run compares to other free platforms, see [Free deployment options]({{ '/deployment/free-tier.html' | relative_url }}).
+### What "free" means here
+
+Google's free tier includes, per month:
+
+- 2 million requests
+- 180,000 vCPU-seconds
+- 360,000 GiB-seconds of memory
+- 1 GB of outbound data transfer from North America
+
+A bridge that handles a few hundred ChatGPT requests a month stays far inside these limits.
+
+Two honest caveats:
+
+- **A billing account is still required**, even though you are not charged inside the free limits. You need a credit card on file.
+- **Free allowances can change.** Check the [Cloud Run pricing page](https://cloud.google.com/run/pricing) before you rely on it.
+
+### What goes where
+
+| Part | What it does |
+|---|---|
+| Cloud Run service | runs the bridge |
+| Cloud Run URL | gives the bridge a free public HTTPS address |
+| Tailscale (userspace) | lets the bridge reach private OpenClaw |
+| Secret Manager | stores the Tailscale key and the webhook secret |
+| ChatGPT Action | calls the public bridge URL |
+
+### Simple connection map
+
+```text
+ChatGPT -> https://<service>-<hash>.run.app -> bridge on Cloud Run -> Tailscale -> OpenClaw
+```
+
+### Before you start
+
+You need:
+
+- a Google Cloud project with billing enabled
+- the `gcloud` command installed and signed in
+- access to the OpenClaw tailnet address or Tailscale IP
+- an account on [Tailscale](https://tailscale.com)
+
+You do **not** need Kubernetes, a domain name, or a server.
+
+---
+
+### Step 1 — Get a Tailscale auth key
+
+Cloud Run starts and stops your container automatically, so the bridge must be able to join the tailnet **without anyone typing a password**.
+That is what an auth key is for.
+
+1. Open the [Tailscale admin console](https://login.tailscale.com/admin/settings/keys).
+2. Click **Generate auth key**.
+3. Turn on **Ephemeral**.
+4. Turn on **Reusable**.
+5. Click **Generate key** and copy the value. It starts with `tskey-`.
+
+#### Why ephemeral and reusable?
+
+| Setting | Why |
+|---|---|
+| **Ephemeral** | When Cloud Run stops the container, the device removes itself from your tailnet. Without this, your device list fills with dead entries |
+| **Reusable** | Cloud Run may start the container many times. A single-use key would work once and then fail |
+
+Copy the key somewhere safe for the next step. You cannot view it again later.
+
+---
+
+### Step 2 — Store your secrets
+
+Never put the auth key or the webhook secret directly in the deploy command, because they end up in your shell history and in the Cloud Run configuration in plain text.
+
+Set your project first:
+
+```bash
+gcloud config set project YOUR_PROJECT_ID
+```
+
+Turn on the services this guide needs:
+
+```bash
+gcloud services enable run.googleapis.com \
+  artifactregistry.googleapis.com \
+  secretmanager.googleapis.com
+```
+
+Now store the two secrets:
+
+```bash
+printf '%s' 'tskey-REPLACE-WITH-YOUR-KEY' \
+  | gcloud secrets create tailscale-authkey --data-file=-
+
+printf '%s' 'replace-with-a-long-random-secret' \
+  | gcloud secrets create openclaw-webhook-secret --data-file=-
+```
+
+Let Cloud Run read them:
+
+```bash
+PROJECT_NUMBER="$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')"
+SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+for SECRET in tailscale-authkey openclaw-webhook-secret; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --member="serviceAccount:${SERVICE_ACCOUNT}" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
+
+---
+
+### Step 3 — Create the startup script
+
+Cloud Run runs **one container**. That container has to start Tailscale first, then the bridge.
+
+In the project folder, create a file named `start.sh`:
+
+```bash
+cat > start.sh <<'EOF'
+#!/bin/sh
+set -e
+
+# Cloud Run has no /dev/net/tun, so Tailscale must run in userspace mode.
+# State is kept in memory because the container filesystem does not survive.
+/app/tailscaled \
+  --tun=userspace-networking \
+  --socket=/tmp/tailscaled.sock \
+  --state=mem: \
+  --socks5-server=localhost:1055 \
+  --outbound-http-proxy-listen=localhost:1055 &
+
+# Join the tailnet. This must finish before the bridge starts serving.
+/app/tailscale --socket=/tmp/tailscaled.sock up \
+  --auth-key="${TAILSCALE_AUTHKEY}" \
+  --hostname="${TS_HOSTNAME:-openclaw-bridge}"
+
+# Send the bridge's outbound calls through the tailnet.
+export HTTP_PROXY="http://localhost:1055"
+export HTTPS_PROXY="http://localhost:1055"
+export NO_PROXY="127.0.0.1,localhost"
+
+exec /app/openclaw-chatgpt-bridge
+EOF
+chmod +x start.sh
+```
+
+#### What the important lines do
+
+| Line | Why it matters |
+|---|---|
+| `--tun=userspace-networking` | Cloud Run cannot create a VPN network device. This mode works without one |
+| `--state=mem:` | Nothing is written to disk, and the device removes itself when the container stops |
+| `--outbound-http-proxy-listen` | Opens a local HTTP proxy on port 1055 that reaches the tailnet |
+| `export HTTP_PROXY=...` | Tells the bridge to send its OpenClaw calls through that proxy |
+| `exec` | The bridge becomes the main process, so Cloud Run's stop signal reaches it |
+
+---
+
+### Step 4 — Create the Dockerfile
+
+The repository's normal `Dockerfile` builds only the bridge.
+For Cloud Run you need one image containing **both** the bridge and Tailscale.
+
+Create a file named `Dockerfile.cloudrun`:
+
+```dockerfile
+FROM golang:1.22-alpine AS build
+
+WORKDIR /src
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+COPY go.mod ./
+COPY *.go ./
+
+RUN go test ./...
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
+    -o /out/openclaw-chatgpt-bridge .
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 appuser
+
+COPY --from=build /out/openclaw-chatgpt-bridge /app/openclaw-chatgpt-bridge
+COPY --from=docker.io/tailscale/tailscale:stable /usr/local/bin/tailscaled /app/tailscaled
+COPY --from=docker.io/tailscale/tailscale:stable /usr/local/bin/tailscale /app/tailscale
+COPY start.sh /app/start.sh
+
+RUN chmod +x /app/start.sh
+
+USER 10001
+EXPOSE 8080
+
+CMD ["/app/start.sh"]
+```
+
+This copies the Tailscale programs out of the official Tailscale image, so you do not have to install anything by hand.
+It runs as a non-root user, which is why the script puts the Tailscale socket in `/tmp`.
+
+---
+
+### Step 5 — Build and upload the image
+
+Create a place to store the image:
+
+```bash
+gcloud artifacts repositories create openclaw \
+  --repository-format=docker \
+  --location=us-central1
+```
+
+The build runs in the cloud, so you do not need Docker on your own computer.
+
+`gcloud builds submit --tag` always builds the file named exactly `Dockerfile`, and there is no flag to point it at another name.
+Since this repository already has a `Dockerfile` for normal deployments, tell Cloud Build which one to use with a small build file.
+
+Create `cloudbuild.yaml`:
+
+```bash
+cat > cloudbuild.yaml <<'EOF'
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.cloudrun", "-t", "$_IMAGE", "."]
+images:
+  - "$_IMAGE"
+EOF
+```
+
+Then build:
+
+```bash
+REGION=us-central1
+PROJECT_ID="$(gcloud config get-value project)"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/openclaw/bridge:latest"
+
+gcloud builds submit --config cloudbuild.yaml --substitutions _IMAGE="$IMAGE" .
+```
+
+This takes a few minutes the first time.
+
+If you would rather keep only one Dockerfile, you can instead rename `Dockerfile.cloudrun` to `Dockerfile` and run `gcloud builds submit --tag "$IMAGE" .` — but then the plain Docker and Kubernetes instructions in `CONTRIBUTING.md` will start Tailscale too, which is usually not what you want locally.
+
+---
+
+### Step 6 — Deploy the bridge
+
+```bash
+gcloud run deploy openclaw-bridge \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --port 8080 \
+  --allow-unauthenticated \
+  --min-instances 0 \
+  --max-instances 3 \
+  --memory 256Mi \
+  --set-env-vars 'ADDR=:8080' \
+  --set-env-vars 'OPENCLAW_WEBHOOK_URL=http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt' \
+  --set-env-vars 'OPENCLAW_SESSION_KEY=agent:main:main' \
+  --set-env-vars 'REQUEST_TIMEOUT_MS=30000' \
+  --set-env-vars 'TAILSCALE_ENABLED=true' \
+  --set-env-vars 'TAILSCALE_PROXY_ADDR=127.0.0.1:1055' \
+  --set-secrets 'TAILSCALE_AUTHKEY=tailscale-authkey:latest' \
+  --set-secrets 'OPENCLAW_WEBHOOK_SECRET=openclaw-webhook-secret:latest'
+```
+
+Replace the `OPENCLAW_WEBHOOK_URL` value with your real OpenClaw tailnet address.
+
+If OpenClaw sits behind `tailscale serve`, the address is **https with no port**. Check it with `tailscale serve status` on the OpenClaw machine, and use that form instead:
+
+```text
+OPENCLAW_WEBHOOK_URL=https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+```
+
+The `Dockerfile.cloudrun` above installs `ca-certificates` so the bridge can verify that certificate.
+
+When it finishes, `gcloud` prints your service URL. It looks like:
+
+```text
+https://openclaw-bridge-abc123-uc.a.run.app
+```
+
+That is the public HTTPS address for your ChatGPT Action. There is nothing else to set up.
+
+#### Three settings that trip people up
+
+**`--allow-unauthenticated` is required.**
+ChatGPT cannot sign in to Google. Without this flag every request comes back as `403`.
+The bridge is still protected, because OpenClaw only accepts calls carrying the webhook secret.
+
+**Set `ADDR`, not `PORT`.**
+The bridge binds the address in `ADDR`. It reads `PORT` but does not use it for binding.
+Cloud Run sets `PORT` automatically, and that alone will not move the bridge — so keep `--port 8080` and `ADDR=:8080` matched.
+
+**`OPENCLAW_WEBHOOK_URL` must not be `localhost`.**
+Go never sends requests for `localhost` or `127.0.0.1` through `HTTP_PROXY`, no matter how the proxy is configured.
+If you point the bridge at a loopback address it will quietly skip Tailscale and fail to reach OpenClaw.
+Always use the tailnet hostname or the `100.x.x.x` address.
+
+---
+
+### Step 7 — Test the bridge
+
+#### Check the health page
+
+Open this in a browser, using your own service URL:
+
+```text
+https://openclaw-bridge-abc123-uc.a.run.app/healthz
+```
+
+You should see a small JSON response.
+
+#### Check that Tailscale is connected
+
+```text
+https://openclaw-bridge-abc123-uc.a.run.app/readyz
+```
+
+This one is the real test. It returns `ok` only when the Tailscale proxy is answering.
+If it returns `tailscale proxy not ready`, your auth key is wrong or expired.
+
+#### Test the main API endpoint
+
+```bash
+curl -X POST https://openclaw-bridge-abc123-uc.a.run.app/v1/openclaw \
+  -H 'content-type: application/json' \
+  --data '{"action":"create_flow","goal":"test"}'
+```
+
+If it works, the bridge is ready.
+
+#### If something fails
+
+Read the logs:
+
+```bash
+gcloud run services logs read openclaw-bridge --region "$REGION" --limit 50
+```
+
+Each bridge request logs one line containing `request_id`, `action`, `upstream_status`, and `duration_ms`.
+
+---
+
+### Step 8 — Add the action in Custom GPT
+
+In ChatGPT:
+
+1. Open **Explore GPTs**
+2. Create a new GPT, or edit an existing one
+3. Open **Actions**
+4. Click **Create new action**
+5. Import `openapi/openclaw-bridge.openapi.yaml`
+6. Change the `servers:` URL at the top of the schema to your Cloud Run URL
+7. Save the GPT
+
+#### What must be public?
+
+Only the **bridge URL**:
+
+```text
+https://openclaw-bridge-abc123-uc.a.run.app/v1/openclaw
+```
+
+OpenClaw itself stays private behind Tailscale.
+
+---
+
+### About the cold start
+
+Cloud Run stops your container when nobody is using it. That is what keeps it free.
+
+The next request has to start the container again, which means starting Tailscale and joining the tailnet before the bridge answers. Expect the **first request after a quiet period to take several seconds**. Requests after that are fast.
+
+If that first slow call ever causes a ChatGPT Action to time out, you have two options:
+
+- ask the same thing again, since the second call is fast, or
+- set `--min-instances 1`, which keeps one copy always running. This **leaves the free tier** and costs a few dollars a month.
+
+---
+
+### Final checklist
+
+- [ ] Google Cloud project with billing enabled
+- [ ] Tailscale ephemeral, reusable auth key created
+- [ ] Both secrets stored in Secret Manager
+- [ ] `start.sh` and `Dockerfile.cloudrun` created
+- [ ] Image built and pushed
+- [ ] Service deployed with `--allow-unauthenticated`
+- [ ] `/healthz` returns JSON
+- [ ] `/readyz` reports ready, proving Tailscale connected
+- [ ] `OPENCLAW_WEBHOOK_URL` uses a tailnet address, not localhost
+- [ ] Custom GPT action imported and pointed at the Cloud Run URL
+
+### Short summary
+
+If you only remember one thing, remember this:
+
+- **ChatGPT talks to the free Cloud Run URL**
+- **the bridge talks to OpenClaw through Tailscale in userspace mode**
+- **OpenClaw does not need to be public, and you do not need a server or a domain**

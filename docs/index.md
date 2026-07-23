@@ -15,13 +15,23 @@ description: Connect ChatGPT Actions to OpenClaw with a small, secure Go bridge.
 
 <h2 class="section-heading">Get started</h2>
 <div class="card-grid">
+  <a class="doc-card" href="{{ '/openclaw-setup.html' | relative_url }}">
+    <span class="card-icon">00</span>
+    <strong>OpenClaw setup</strong>
+    <span>Enable the webhook route on OpenClaw and test it. Do this before the bridge.</span>
+  </a>
   <a class="doc-card" href="{{ '/step-by-step.html' | relative_url }}">
     <span class="card-icon">01</span>
     <strong>Step-by-step setup</strong>
     <span>Go from clone to a working bridge with the simplest supported path.</span>
   </a>
-  <a class="doc-card" href="{{ '/usecases.html' | relative_url }}">
+  <a class="doc-card" href="{{ '/custom-gpt.html' | relative_url }}">
     <span class="card-icon">02</span>
+    <strong>Custom GPT setup</strong>
+    <span>Import the action, set the server URL, and give the model instructions that work.</span>
+  </a>
+  <a class="doc-card" href="{{ '/usecases.html' | relative_url }}">
+    <span class="card-icon">03</span>
     <strong>Explore use cases</strong>
     <span>See how the bridge supports engineering, operations, research, and more.</span>
   </a>
@@ -39,6 +49,11 @@ description: Connect ChatGPT Actions to OpenClaw with a small, secure Go bridge.
 
 <h2 class="section-heading">Choose a deployment target</h2>
 <div class="card-grid">
+  <a class="doc-card" href="{{ '/deployment/free-tier.html' | relative_url }}">
+    <span class="card-icon">$0</span>
+    <strong>Free options</strong>
+    <span>Compare the platforms that still run the bridge for nothing, and pick one.</span>
+  </a>
   <a class="doc-card" href="{{ '/deployment/aws.html' | relative_url }}">
     <span class="card-icon">AWS</span>
     <strong>Amazon Web Services</strong>

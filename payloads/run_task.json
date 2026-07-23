@@ -1,10 +1,8 @@
 {
   "action": "run_task",
   "flowId": "flow_12345",
+  "runtime": "subagent",
   "task": "Design 3 screens: transaction input, dashboard, and report summary",
   "status": "queued",
-  "metadata": {
-    "stage": "design"
-  }
+  "notifyPolicy": "state_changes"
 }
-

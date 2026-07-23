@@ -53,6 +53,9 @@ This pattern is useful when ChatGPT should coordinate and review the work, while
 ## Deployment
 
 - [Step-by-step setup](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/step-by-step.html)
+- [Free deployment options](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/free-tier.html) — no server or domain needed
+  - [Google Cloud Run](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/gcp.html#free-tier-deployment-with-cloud-run)
+  - [Azure Container Apps](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/azure.html#free-tier-deployment-with-azure-container-apps)
 - [AWS deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/aws.html)
 - [Azure deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/azure.html)
 - [DigitalOcean deployment](https://atnanahidiw.github.io/openclaw-chatgpt-bridge/deployment/digital-ocean.html)

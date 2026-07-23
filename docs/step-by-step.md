@@ -6,7 +6,22 @@ title: Step-by-step setup
 
 This page gives the simplest way to get the bridge running.
 
-For a more detailed VPS setup, use one of the cloud deployment guides in `docs/deployment/`.
+## The three parts of a working setup
+
+The bridge is the middle piece. It does nothing on its own, so a complete setup is three
+guides, in this order:
+
+| | Guide | What it gives you |
+|---|---|---|
+| 1 | [OpenClaw setup and testing]({{ '/openclaw-setup.html' | relative_url }}) | The webhook route the bridge posts to, plus the two values it needs: `OPENCLAW_WEBHOOK_URL` and `OPENCLAW_WEBHOOK_SECRET` |
+| 2 | **This page** | The bridge itself, running and reachable |
+| 3 | [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}) | The action imported into ChatGPT, with instructions the model can actually follow |
+
+> **Start with part 1.** Nothing below works until OpenClaw has a webhook route, and you
+> cannot fill in your `.env` without the values it produces.
+
+For a more detailed VPS setup, or a free hosted one, use a
+[cloud deployment guide]({{ '/deployment/free-tier.html' | relative_url }}) instead of steps 7 to 9.
 
 ## What this setup does
 
@@ -53,7 +68,7 @@ Open `.env` and set these values:
 |---|---|
 | `OPENCLAW_WEBHOOK_URL` | The OpenClaw webhook address |
 | `OPENCLAW_WEBHOOK_SECRET` | A long secret shared between the bridge and OpenClaw |
-| `OPENCLAW_SESSION_KEY` | The default session key or room name OpenClaw should use |
+| `OPENCLAW_SESSION_KEY` | Recorded in bridge logs only. The OpenClaw webhook route is bound to a session by OpenClaw config, so the bridge cannot choose one |
 
 ### Important note about private OpenClaw
 
@@ -182,6 +197,10 @@ If OpenClaw is private, use the Tailscale-backed manifest.
 ---
 
 ## 10. Add the GPT Action
+
+> For the full version — schema import, the `servers:` URL, endpoint exposure, and the
+> instructions the model needs to handle `expectedRevision` — see
+> [Custom GPT setup]({{ '/custom-gpt.html' | relative_url }}).
 
 1. Open the Custom GPT builder in ChatGPT.
 2. Go to **Actions**.

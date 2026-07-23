@@ -42,51 +42,79 @@ paths:
                     an existing flow.
                 sessionKey:
                   type: string
-                  description: OpenClaw session key or route key.
-                goal:
-                  type: string
-                  description: Human-readable project goal.
-                task:
-                  type: string
                   description: >
-                    Instruction or message to send to OpenClaw. Required for run_task.
+                    Advisory only, recorded in the bridge log. It is NOT sent to
+                    OpenClaw: the webhook route is bound to a session by OpenClaw
+                    configuration, so a caller cannot choose one.
                 goal:
                   type: string
                   description: >
                     Human-readable project goal. Required for create_flow.
+                task:
+                  type: string
+                  description: >
+                    Instruction or message to send to OpenClaw. Required for run_task.
+                runtime:
+                  type: string
+                  enum:
+                    - subagent
+                    - acp
+                  description: >
+                    Execution runtime for the child task. Required for run_task.
+                childSessionKey:
+                  type: string
+                  description: >
+                    Optional session for the child task created by run_task.
+                expectedRevision:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    Flow revision the caller expects, for optimistic concurrency.
+                    Required for resume_flow and finish_flow. Read the current
+                    value from the get_flow response before calling either.
                 status:
                   type: string
-                  description: Optional status hint.
+                  description: >
+                    Optional status hint. create_flow accepts queued, running,
+                    waiting, or blocked. run_task and resume_flow accept queued or
+                    running. get_flow and finish_flow do not accept it.
                 notifyPolicy:
                   type: string
                   enum:
                     - done_only
-                    - all_events
+                    - state_changes
                     - silent
                   default: done_only
                   description: >
-                    Notification behavior. done_only sends only final updates.
-                    all_events sends progress events. silent suppresses notifications.
+                    Notification behavior, honored by create_flow and run_task only.
+                    done_only sends only final updates. state_changes sends progress
+                    events. silent suppresses notifications.
                 metadata:
                   type: object
                   additionalProperties: true
+                  description: >
+                    Free-form annotations. Forwarded as OpenClaw's stateJson on
+                    create_flow, resume_flow, and finish_flow; ignored for get_flow
+                    and run_task, which do not accept it.
             examples:
               createFlow:
                 summary: Create a new OpenClaw flow
                 value:
                   action: create_flow
                   goal: Check the deployment status and summarize any errors.
-                  sessionKey: agent:main:chatgpt
                   notifyPolicy: done_only
+                  metadata:
+                    source: chatgpt-action
               runTask:
                 summary: Run a task in an existing flow
                 value:
                   action: run_task
                   flowId: flow_123
+                  runtime: subagent
                   task: Continue from the last result and inspect the failed pod logs.
-                  notifyPolicy: all_events
+                  notifyPolicy: state_changes
               getFlow:
-                summary: Get flow status
+                summary: Get flow status, and read the revision the next call needs
                 value:
                   action: get_flow
                   flowId: flow_123
@@ -95,28 +123,142 @@ paths:
                 value:
                   action: resume_flow
                   flowId: flow_123
-                  task: Resume and apply the suggested fix.
-                  notifyPolicy: done_only
+                  expectedRevision: 3
+                  status: running
               finishFlow:
                 summary: Finish a flow
                 value:
                   action: finish_flow
                   flowId: flow_123
+                  expectedRevision: 4
       responses:
         "200":
-          description: Bridge accepted and processed the request.
+          description: Bridge accepted the request and OpenClaw returned a 2xx.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                properties:
-                  ok:
-                    type: boolean
-                  bridge:
-                    type: string
-                  upstreamStatus:
-                    type: integer
-                  upstreamBody:
-                    type: object
-                    additionalProperties: true
+                $ref: "#/components/schemas/BridgeSuccess"
+        "400":
+          description: >
+            The body was not a single JSON object, or it failed validation.
+            Validation failures list every problem in `details`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+              examples:
+                validationFailed:
+                  summary: Missing a field the action requires
+                  value:
+                    ok: false
+                    error: invalid request
+                    details:
+                      - flowId is required for run_task
+                      - task is required for run_task
+                malformedBody:
+                  summary: Body was not a JSON object
+                  value:
+                    ok: false
+                    error: request body must be JSON object
+        "405":
+          description: Method other than POST.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "413":
+          description: Body exceeded MAX_BODY_BYTES.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "500":
+          description: Bridge is misconfigured, e.g. OPENCLAW_WEBHOOK_URL is unset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "502":
+          description: OpenClaw was unreachable or its response could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        "504":
+          description: OpenClaw did not respond within REQUEST_TIMEOUT_MS.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+        default:
+          description: >
+            OpenClaw returned a non-2xx status and the bridge mirrored it. The
+            status is whatever OpenClaw sent, so this set is open: a 401 from
+            OpenClaw surfaces here as a 401.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BridgeError"
+              examples:
+                upstreamRejected:
+                  summary: OpenClaw rejected the webhook secret
+                  value:
+                    ok: false
+                    error: OpenClaw returned non-2xx status
+                    upstreamStatus: 401
+                    upstreamBody:
+                      message: unauthorized
+
+components:
+  schemas:
+    UpstreamBody:
+      description: >
+        OpenClaw response body, passed through unchanged. Parsed JSON when
+        OpenClaw replies with application/json, otherwise the raw body as a
+        string. Not constrained to an object.
+
+    BridgeSuccess:
+      type: object
+      additionalProperties: true
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+          description: Always true on this response.
+        bridge:
+          type: string
+          description: Bridge service name.
+        upstreamStatus:
+          type: integer
+          description: Status code OpenClaw returned.
+        upstreamBody:
+          $ref: "#/components/schemas/UpstreamBody"
+
+    BridgeError:
+      type: object
+      additionalProperties: true
+      required:
+        - ok
+        - error
+      properties:
+        ok:
+          type: boolean
+          description: Always false on error responses.
+        error:
+          type: string
+          description: Short, human-readable reason.
+        details:
+          type: array
+          items:
+            type: string
+          description: >
+            Present only on validation failures. Lists every problem found, not
+            just the first, so all of them can be fixed in one retry.
+        upstreamStatus:
+          type: integer
+          description: >
+            Present only when the request reached OpenClaw and it replied
+            non-2xx.
+        upstreamBody:
+          $ref: "#/components/schemas/UpstreamBody"

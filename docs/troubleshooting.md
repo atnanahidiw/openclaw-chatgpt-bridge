@@ -95,6 +95,64 @@ This means the bridge reached OpenClaw, but OpenClaw said “no”.
 
 ---
 
+## Deployment failures
+
+Getting the bridge *deployed* has its own characteristic failures — an `arm64` image the
+platform refuses to start, a private registry it cannot pull from, a `401` caused by missing
+one of the two restarts a secret change needs.
+
+Those are documented where you hit them, with the commands to fix each one:
+
+- **[Things that went wrong for us]({{ '/deployment/azure.html' | relative_url }}#things-that-went-wrong-for-us)** — in the Azure guide, but the causes apply to any container platform
+- [OpenClaw setup and testing]({{ '/openclaw-setup.html' | relative_url }}) — for webhook route and secret problems on the OpenClaw side
+
+The rest of this page covers problems with a bridge that is already running.
+
+---
+
+## `x509: certificate signed by unknown authority`
+
+This means `OPENCLAW_WEBHOOK_URL` is an `https` address and the bridge container has no CA trust store.
+
+It shows up most often when OpenClaw sits behind `tailscale serve`, because that fronts OpenClaw on HTTPS instead of its plain HTTP port.
+
+### Fix
+
+Make sure the image installs certificates. The repository `Dockerfile` does:
+
+```dockerfile
+RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 appuser
+```
+
+If you build your own image from a minimal base such as `scratch` or bare `alpine`, add the same package, or copy `/etc/ssl/certs/ca-certificates.crt` in from the build stage.
+
+---
+
+## `tailscale serve` addresses
+
+If `tailscale serve` publishes OpenClaw, the address has **no port** and uses `https`:
+
+```bash
+tailscale serve status
+```
+
+```text
+https://your-host.your-tailnet.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:18789
+```
+
+So the value to use is:
+
+```bash
+OPENCLAW_WEBHOOK_URL=https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt
+```
+
+Not `http://your-host:18789/...`. Plain HTTP on port 80 does not answer, and the raw port is not exposed to the tailnet.
+
+Requests to an `https` upstream travel through `HTTPS_PROXY`, so set both `HTTP_PROXY` and `HTTPS_PROXY` when using userspace Tailscale.
+
+---
+
 ## Bridge times out
 
 This means the bridge waited too long for OpenClaw.

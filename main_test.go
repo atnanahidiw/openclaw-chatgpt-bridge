@@ -32,15 +32,226 @@ func TestNormalizeCreateFlow(t *testing.T) {
 
 func TestValidateRunTask(t *testing.T) {
 	normalized := normalizeInboundPayload(map[string]any{
-		"action": "run_task",
-		"flowId": "flow_123",
-		"task":   "Write database schema",
-		"status": "queued",
+		"action":  "run_task",
+		"flowId":  "flow_123",
+		"task":    "Write database schema",
+		"runtime": "subagent",
+		"status":  "queued",
 	}, "")
 
 	result := validateInboundPayload(normalized)
 	if !result.OK {
 		t.Fatalf("expected payload valid, got errors: %#v", result.Errors)
+	}
+}
+
+func TestRunTaskRequiresRuntime(t *testing.T) {
+	base := map[string]any{
+		"action": "run_task",
+		"flowId": "flow_123",
+		"task":   "Write database schema",
+	}
+
+	if result := validateInboundPayload(normalizeInboundPayload(base, "")); result.OK {
+		t.Fatalf("expected run_task without runtime to be rejected")
+	}
+
+	base["runtime"] = "not-a-runtime"
+	if result := validateInboundPayload(normalizeInboundPayload(base, "")); result.OK {
+		t.Fatalf("expected unknown runtime to be rejected")
+	}
+}
+
+// resume_flow and finish_flow carry optimistic concurrency upstream, so the
+// revision is required and 0 must be distinguishable from "omitted".
+func TestResumeAndFinishRequireExpectedRevision(t *testing.T) {
+	for _, action := range []string{"resume_flow", "finish_flow"} {
+		t.Run(action, func(t *testing.T) {
+			without := normalizeInboundPayload(map[string]any{
+				"action": action,
+				"flowId": "flow_123",
+			}, "")
+			if validateInboundPayload(without).OK {
+				t.Fatalf("expected %s without expectedRevision to be rejected", action)
+			}
+
+			raw := map[string]any{"action": action, "flowId": "flow_123", "expectedRevision": json.Number("0")}
+			zero := normalizeInboundPayload(raw, "")
+			if zero.ExpectedRevision == nil || *zero.ExpectedRevision != 0 {
+				t.Fatalf("expected revision 0 to be preserved, got %v", zero.ExpectedRevision)
+			}
+			if result := validateInboundPayload(zero); !result.OK {
+				t.Fatalf("expected revision 0 to be valid, got %#v", result.Errors)
+			}
+			if got := buildOpenClawPayload(zero)["expectedRevision"]; got != int64(0) {
+				t.Fatalf("expected expectedRevision 0 in outbound body, got %#v", got)
+			}
+		})
+	}
+}
+
+// The upstream schemas are strict(): any key the action does not declare fails
+// the whole request. This pins the exact key set the bridge emits.
+func TestOutboundKeysMatchUpstreamSchema(t *testing.T) {
+	accepted := map[string]map[string]bool{
+		"create_flow": {"action": true, "goal": true, "controllerId": true, "status": true, "notifyPolicy": true, "currentStep": true, "stateJson": true, "waitJson": true},
+		"run_task":    {"action": true, "flowId": true, "runtime": true, "task": true, "childSessionKey": true, "label": true, "sourceId": true, "parentTaskId": true, "agentId": true, "runId": true, "preferMetadata": true, "notifyPolicy": true, "status": true, "startedAt": true, "lastEventAt": true, "progressSummary": true},
+		"get_flow":    {"action": true, "flowId": true},
+		"resume_flow": {"action": true, "flowId": true, "expectedRevision": true, "status": true, "currentStep": true, "stateJson": true},
+		"finish_flow": {"action": true, "flowId": true, "expectedRevision": true, "stateJson": true},
+	}
+
+	// Deliberately over-supplies every inbound field, including the two the
+	// bridge must never forward.
+	inbound := map[string]any{
+		"flowId":           "flow_123",
+		"goal":             "Ship it",
+		"task":             "Do the thing",
+		"runtime":          "subagent",
+		"childSessionKey":  "agent:main:worker",
+		"sessionKey":       "agent:main:main",
+		"notifyPolicy":     "done_only",
+		"expectedRevision": json.Number("7"),
+		"metadata":         map[string]any{"source": "chatgpt-action"},
+	}
+
+	for action, allowed := range accepted {
+		t.Run(action, func(t *testing.T) {
+			raw := map[string]any{}
+			for k, v := range inbound {
+				raw[k] = v
+			}
+			raw["action"] = action
+			if action == "create_flow" || action == "run_task" {
+				raw["status"] = "queued"
+			}
+
+			normalized := normalizeInboundPayload(raw, "agent:main:main")
+			if result := validateInboundPayload(normalized); !result.OK {
+				t.Fatalf("fixture should be valid, got %#v", result.Errors)
+			}
+
+			for key := range buildOpenClawPayload(normalized) {
+				if !allowed[key] {
+					t.Errorf("%s: emits %q, which upstream rejects with 400 Unrecognized keys", action, key)
+				}
+			}
+		})
+	}
+}
+
+// Neither is accepted by any upstream action.
+func TestSessionKeyAndMetadataAreNeverForwarded(t *testing.T) {
+	for _, action := range []string{"create_flow", "run_task", "get_flow", "resume_flow", "finish_flow"} {
+		t.Run(action, func(t *testing.T) {
+			normalized := normalizeInboundPayload(map[string]any{
+				"action":           action,
+				"flowId":           "flow_123",
+				"goal":             "Ship it",
+				"task":             "Do the thing",
+				"runtime":          "acp",
+				"expectedRevision": json.Number("3"),
+				"sessionKey":       "agent:main:main",
+				"metadata":         map[string]any{"source": "chatgpt-action"},
+			}, "agent:main:main")
+
+			outbound := buildOpenClawPayload(normalized)
+			if _, ok := outbound["sessionKey"]; ok {
+				t.Errorf("%s: sessionKey must not be forwarded", action)
+			}
+			if _, ok := outbound["metadata"]; ok {
+				t.Errorf("%s: metadata must not be forwarded", action)
+			}
+		})
+	}
+}
+
+// metadata has no upstream home, but three actions accept a free-form
+// stateJson, so it should survive there rather than being silently dropped.
+func TestMetadataBecomesStateJSON(t *testing.T) {
+	meta := map[string]any{"source": "chatgpt-action"}
+
+	for _, tc := range []struct {
+		action string
+		want   bool
+	}{
+		{"create_flow", true},
+		{"resume_flow", true},
+		{"finish_flow", true},
+		{"get_flow", false},
+		{"run_task", false},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			normalized := normalizeInboundPayload(map[string]any{
+				"action":           tc.action,
+				"flowId":           "flow_123",
+				"goal":             "Ship it",
+				"task":             "Do the thing",
+				"runtime":          "subagent",
+				"expectedRevision": json.Number("1"),
+				"metadata":         meta,
+			}, "")
+
+			_, got := buildOpenClawPayload(normalized)["stateJson"]
+			if got != tc.want {
+				t.Fatalf("%s: stateJson present = %v, want %v", tc.action, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNotifyPolicyMatchesUpstreamEnum(t *testing.T) {
+	// "all_events" was never a real upstream value.
+	for _, policy := range []string{"all_events", "unsupported"} {
+		normalized := normalizeInboundPayload(map[string]any{
+			"action":       "create_flow",
+			"goal":         "Build app",
+			"notifyPolicy": policy,
+		}, "")
+		if validateInboundPayload(normalized).OK {
+			t.Fatalf("expected notifyPolicy %q to be rejected", policy)
+		}
+	}
+
+	for _, policy := range []string{"done_only", "state_changes", "silent"} {
+		normalized := normalizeInboundPayload(map[string]any{
+			"action":       "create_flow",
+			"goal":         "Build app",
+			"notifyPolicy": policy,
+		}, "")
+		if result := validateInboundPayload(normalized); !result.OK {
+			t.Fatalf("expected notifyPolicy %q to be valid, got %#v", policy, result.Errors)
+		}
+	}
+}
+
+// notifyPolicy is only declared by create_flow and run_task upstream.
+func TestNotifyPolicyOnlySentWhereAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		action string
+		want   bool
+	}{
+		{"create_flow", true},
+		{"run_task", true},
+		{"get_flow", false},
+		{"resume_flow", false},
+		{"finish_flow", false},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			normalized := normalizeInboundPayload(map[string]any{
+				"action":           tc.action,
+				"flowId":           "flow_123",
+				"goal":             "Ship it",
+				"task":             "Do the thing",
+				"runtime":          "subagent",
+				"expectedRevision": json.Number("1"),
+			}, "")
+
+			_, got := buildOpenClawPayload(normalized)["notifyPolicy"]
+			if got != tc.want {
+				t.Fatalf("%s: notifyPolicy present = %v, want %v", tc.action, got, tc.want)
+			}
+		})
 	}
 }
 

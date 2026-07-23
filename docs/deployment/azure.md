@@ -5,12 +5,30 @@ title: Azure deployment
 # Azure deployment for the OpenClaw ChatGPT Bridge
 
 This guide is written for a **non-technical person** or an **intern**.
-It gives one simple path:
 
-- use **Azure Virtual Machines** for the server
-- use **Azure DNS** for the domain name
-- use **Caddy** for HTTPS
-- use **Tailscale** so the bridge can reach OpenClaw privately
+<div class="tested" markdown="1">
+**Tested — the free tier Container Apps path was succesfully deployed end to end.**
+
+Jump to it: [Free tier deployment with Azure Container Apps](#free-tier-deployment-with-azure-container-apps).
+</div>
+
+There are **two ways** to run the bridge on Azure. Pick one:
+
+| | Virtual machine | [Free tier: Container Apps](#free-tier-deployment-with-azure-container-apps) |
+|---|---|---|
+| Cost | a few dollars a month | nothing, within the free limits |
+| Domain name | you buy one | not needed |
+| HTTPS | Caddy sets it up | included, automatic |
+| Runs when idle | always on | sleeps, wakes on demand |
+
+**→ Want the free option? [Skip to Free tier deployment with Azure Container Apps](#free-tier-deployment-with-azure-container-apps).**
+
+The virtual machine path below uses:
+
+- **Azure Virtual Machines** for the server
+- **Azure DNS** for the domain name
+- **Caddy** for HTTPS
+- **Tailscale** so the bridge can reach OpenClaw privately
 
 ## One-sentence explanation
 
@@ -231,7 +249,7 @@ EOF
 | `ADDR=127.0.0.1:8080` | bridge listens only locally on the server |
 | `OPENCLAW_WEBHOOK_URL` | private OpenClaw address over Tailscale |
 | `OPENCLAW_WEBHOOK_SECRET` | secret used when the bridge calls OpenClaw |
-| `OPENCLAW_SESSION_KEY` | default session key sent to OpenClaw |
+| `OPENCLAW_SESSION_KEY` | recorded in bridge logs only; the OpenClaw webhook route decides the real session |
 | `REQUEST_TIMEOUT_MS` | how long to wait before timing out |
 | `MAX_BODY_BYTES` | maximum request size allowed |
 
@@ -366,3 +384,661 @@ OpenClaw itself can stay private behind Tailscale.
 - [ ] Bridge container running
 - [ ] HTTPS works on `https://bridge.yourdomain.com`
 - [ ] Custom GPT action imported
+
+---
+
+## Free tier deployment with Azure Container Apps <span class="tested-tag">Tested</span>{#free-tier-deployment-with-azure-container-apps}
+
+This is the **free** path on Azure. It does not use a virtual machine, a domain name, or Caddy.
+Instead it uses **Azure Container Apps**, which runs Tailscale as a second container beside the bridge and hands you an HTTPS URL for nothing.
+
+If you want the always-on virtual machine instead, that is the [first half of this page](#one-sentence-explanation).
+For how Azure compares to other free platforms, see [Free deployment options]({{ '/deployment/free-tier.html' | relative_url }}).
+
+### What "free" means here
+
+Azure gives every subscription these amounts free, every calendar month, with no expiry:
+
+- 2 million HTTP requests
+- 180,000 vCPU-seconds
+- 360,000 GiB-seconds
+
+Two things make this a good fit for the bridge:
+
+- **Health probe requests are not billable**, so `/healthz` and `/readyz` checks never eat the request allowance.
+- **Scaling to zero costs nothing.** When nobody is using the bridge, you are charged for no compute at all.
+
+Two honest caveats:
+
+- **Stay on the Consumption plan.** A Dedicated workload profile adds a management fee, and bringing your own virtual network can add charges.
+- **Free allowances can change.** Check the [Container Apps pricing page](https://azure.microsoft.com/en-us/pricing/details/container-apps/) before you rely on it.
+
+### Why this is simpler than Cloud Run
+
+Cloud Run runs one container, so the [Cloud Run section]({{ '/deployment/gcp.html' | relative_url }}#free-tier-deployment-with-cloud-run) has to build a special image with Tailscale copied inside it.
+
+Container Apps runs **several containers side by side**, sharing one network. So Tailscale is just a second container, exactly like the project's Helm chart already does on Kubernetes. You keep the repository's normal `Dockerfile` and write no startup script.
+
+### What goes where
+
+| Part | What it does |
+|---|---|
+| Container Apps environment | the space your app runs in |
+| `bridge` container | runs the bridge |
+| `tailscale` container | joins the tailnet and offers a local proxy |
+| Container Apps URL | gives the bridge a free public HTTPS address |
+| Azure Container Registry | stores the image you build |
+| ChatGPT Action | calls the public bridge URL |
+
+### Simple connection map
+
+```text
+ChatGPT -> https://<app>.<region>.azurecontainerapps.io -> bridge container
+                                                              |
+                                              localhost:1055  v
+                                                        tailscale container -> OpenClaw
+```
+
+Both containers share `localhost`, which is what makes the proxy work.
+
+### Before you start
+
+You need:
+
+- an Azure subscription
+- the `az` command installed and signed in
+- access to the OpenClaw tailnet address or Tailscale IP
+- an account on [Tailscale](https://tailscale.com)
+
+You do **not** need Kubernetes, a domain name, or a server.
+
+---
+
+### Step 1 — Get a Tailscale auth key
+
+Container Apps starts and stops your containers automatically, so Tailscale must join the tailnet **without anyone typing a password**.
+
+1. Open the [Tailscale admin console](https://login.tailscale.com/admin/settings/keys).
+2. Click **Generate auth key**.
+3. Turn on **Ephemeral**.
+4. Turn on **Reusable**.
+5. Click **Generate key** and copy the value. It starts with `tskey-`.
+
+#### Why ephemeral and reusable?
+
+| Setting | Why |
+|---|---|
+| **Ephemeral** | When the app scales to zero, the device removes itself from your tailnet instead of piling up as a dead entry |
+| **Reusable** | The app may start many times. A single-use key would work once and then fail |
+
+---
+
+### Step 2 — Prepare Azure
+
+Install the Container Apps extension and register the provider:
+
+```bash
+az extension add --name containerapp --upgrade
+az provider register --namespace Microsoft.App
+```
+
+Create a resource group and an environment:
+
+```bash
+RESOURCE_GROUP=openclaw-bridge
+LOCATION=eastus
+
+az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+
+az containerapp env create \
+  --name openclaw-env \
+  --resource-group "$RESOURCE_GROUP" \
+  --location "$LOCATION"
+```
+
+The environment takes a couple of minutes to create.
+
+---
+
+### Step 3 — Build and publish the image
+
+Container Apps pulls your image from a registry, so you need one. There are two ways to do
+this, and they are both fine — pick based on whether you want a private image or a free one.
+
+| | **Option A — GitHub Container Registry** | **Option B — Azure Container Registry** |
+|---|---|---|
+| Cost | free | **~$5/month** (Basic SKU, no free tier) |
+| Image visibility | public | private |
+| Container Apps credentials | none needed | registry secret in the YAML |
+| Who builds it | your machine | Azure, in the cloud |
+| Needs a local container CLI | yes | no |
+| Handles `amd64` for you | no, you pass `--platform` | yes, automatic |
+
+> **Note.** Option B is the simpler path and the one to choose if you want the image kept
+> private or you have no container tooling locally. It just is not free, so if you came to
+> this page for a zero-cost deployment, use Option A. The rest of the guide works with
+> either — Step 4 shows the one line that differs.
+
+Do **one** of the two sections below, then continue to Step 4.
+
+---
+
+#### Option A — GitHub Container Registry (free)
+
+#### Two important constraints
+
+**Container Apps only runs `linux/amd64` images.** If you are on an Apple Silicon Mac or
+any other ARM machine, a plain local build produces an `arm64` image that Container Apps
+refuses to start. The repository `Dockerfile` handles this: it pins the build stage to your
+own machine and cross-compiles, because Go cross-compiles natively and emulating the whole
+toolchain would be many times slower.
+
+```dockerfile
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} go build ...
+```
+
+**Any Docker-compatible CLI works.** The commands below use `docker`; substitute `nerdctl`
+or `podman` unchanged if that is what you have.
+
+#### Build
+
+```bash
+docker build --platform linux/amd64 \
+  -t ghcr.io/YOUR_GITHUB_USER/openclaw-chatgpt-bridge:v1 \
+  --build-arg VERSION=0.2.0 \
+  --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+  --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+```
+
+Confirm the architecture before pushing — this is the single most common cause of a
+revision that deploys but never starts:
+
+```bash
+docker image inspect ghcr.io/YOUR_GITHUB_USER/openclaw-chatgpt-bridge:v1 \
+  --format '{{.Architecture}} {{.Os}}'
+```
+
+It must print `amd64 linux`.
+
+Avoid the tag `latest`. A fixed tag like `v1` makes it obvious which build is running.
+
+#### Push
+
+Log in with a GitHub token that has the `write:packages` scope:
+
+```bash
+docker login ghcr.io -u YOUR_GITHUB_USER
+docker push ghcr.io/YOUR_GITHUB_USER/openclaw-chatgpt-bridge:v1
+```
+
+#### Make the package public
+
+**New GitHub packages are private by default**, and Container Apps has no credentials, so
+the deployment will fail with an image-pull error until you change this.
+
+1. Open `https://github.com/users/YOUR_GITHUB_USER/packages/container/openclaw-chatgpt-bridge/settings`
+2. Scroll to **Danger Zone**
+3. Click **Change visibility** → **Public**
+
+Verify it worked by doing exactly what Azure will do — fetch the manifest anonymously:
+
+```bash
+REPO=YOUR_GITHUB_USER/openclaw-chatgpt-bridge
+TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${REPO}:pull&service=ghcr.io" \
+  | sed -E 's/.*"token":"([^"]+)".*/\1/')
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+  "https://ghcr.io/v2/${REPO}/manifests/v1"
+```
+
+`200` means Azure can pull it. `403` means it is still private.
+
+---
+
+#### Option B — Azure Container Registry (~$5/month, private)
+
+This is the original path. It costs money, but it needs no container tooling on your
+machine and produces an `amd64` image without you thinking about architecture.
+
+Create a registry. The name must be globally unique and lowercase:
+
+```bash
+ACR_NAME=openclawbridge$RANDOM
+
+az acr create \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$ACR_NAME" \
+  --sku Basic \
+  --admin-enabled true
+```
+
+Build the image in the cloud, so you do not need Docker on your own computer.
+This uses the repository's **normal** `Dockerfile` — nothing special is needed:
+
+```bash
+az acr build \
+  --registry "$ACR_NAME" \
+  --image bridge:v1 \
+  --file Dockerfile .
+```
+
+Avoid the tag `latest`. A fixed tag like `v1` makes it obvious which build is running.
+
+Because the image stays private, Container Apps needs credentials. Collect them for
+Step 4:
+
+```bash
+ACR_SERVER="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+ACR_PASSWORD="$(az acr credential show --name "$ACR_NAME" --query 'passwords[0].value' -o tsv)"
+IMAGE="${ACR_SERVER}/bridge:v1"
+```
+
+---
+
+### Step 4 — Write the app definition
+
+Sidecars cannot be described with command line flags alone, so the app is defined in a YAML file.
+
+First collect the values the file needs. Typing the secrets with `read -s` keeps them out of your shell history:
+
+```bash
+ENV_ID="$(az containerapp env show --name openclaw-env --resource-group "$RESOURCE_GROUP" --query id -o tsv)"
+
+# Option A (GHCR): set IMAGE yourself.
+IMAGE="ghcr.io/YOUR_GITHUB_USER/openclaw-chatgpt-bridge:v1"
+# Option B (ACR): IMAGE and ACR_* were already set at the end of Step 3.
+
+read -rsp 'Tailscale auth key: ' TS_AUTHKEY_VALUE; echo
+read -rsp 'OpenClaw webhook secret: ' OPENCLAW_SECRET_VALUE; echo
+
+OPENCLAW_URL='http://openclaw-gateway.tailnet:18789/plugins/webhooks/gpt'
+```
+
+The webhook secret must be **byte-identical** to the one OpenClaw resolves. Compare hashes
+rather than eyeballing them, and remember that a value containing spaces, quotes, or
+non-ASCII characters will not survive an HTTP header:
+
+```bash
+printf '%s' "$OPENCLAW_SECRET_VALUE" | shasum -a 256 | cut -c1-16
+grep '^OPENCLAW_WEBHOOK_SECRET=' ~/.openclaw/.env | cut -d= -f2- | tr -d '\n' | shasum -a 256 | cut -c1-16
+```
+
+Use `cut -d= -f2-`, not `-f2`, or a secret containing `=` is silently truncated.
+
+Replace `OPENCLAW_URL` with your real OpenClaw tailnet address.
+
+If OpenClaw sits behind `tailscale serve`, the address is **https with no port**. Check it with `tailscale serve status` on the OpenClaw machine, and use that form instead:
+
+```bash
+OPENCLAW_URL='https://your-host.your-tailnet.ts.net/plugins/webhooks/gpt'
+```
+
+The bridge image installs `ca-certificates` so it can verify that certificate.
+
+Now write the file. Both versions below are **complete** — copy the one matching the option
+you chose in Step 3, rather than assembling pieces. They differ only in the `registries`
+block and one extra secret.
+
+<details class="use-case" markdown="1">
+<summary><strong>Full <code>app.yaml</code> — Option A: public image (GHCR, free)</strong></summary>
+
+No registry credentials, because Container Apps pulls a public image anonymously.
+
+```bash
+cat > app.yaml <<EOF
+location: ${LOCATION}
+type: Microsoft.App/containerApps
+name: openclaw-bridge
+properties:
+  managedEnvironmentId: ${ENV_ID}
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      targetPort: 8080
+      transport: auto
+      allowInsecure: false
+    secrets:
+      - name: tailscale-authkey
+        value: ${TS_AUTHKEY_VALUE}
+      - name: openclaw-webhook-secret
+        value: ${OPENCLAW_SECRET_VALUE}
+  template:
+    containers:
+      - name: bridge
+        image: ${IMAGE}
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: ADDR
+            value: ":8080"
+          - name: OPENCLAW_WEBHOOK_URL
+            value: "${OPENCLAW_URL}"
+          - name: OPENCLAW_SESSION_KEY
+            value: "agent:main:main"
+          - name: REQUEST_TIMEOUT_MS
+            value: "30000"
+          - name: TAILSCALE_ENABLED
+            value: "true"
+          - name: TAILSCALE_PROXY_ADDR
+            value: "127.0.0.1:1055"
+          - name: HTTP_PROXY
+            value: "http://localhost:1055"
+          - name: HTTPS_PROXY
+            value: "http://localhost:1055"
+          - name: NO_PROXY
+            value: "127.0.0.1,localhost"
+          - name: OPENCLAW_WEBHOOK_SECRET
+            secretRef: openclaw-webhook-secret
+      - name: tailscale
+        image: docker.io/tailscale/tailscale:stable
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: TS_AUTHKEY
+            secretRef: tailscale-authkey
+          - name: TS_HOSTNAME
+            value: "openclaw-bridge"
+          - name: TS_USERSPACE
+            value: "true"
+          - name: TS_KUBE_SECRET
+            value: ""
+          - name: TS_STATE_DIR
+            value: "/tmp/tailscale"
+          - name: TS_SOCKS5_SERVER
+            value: "localhost:1055"
+          - name: TS_OUTBOUND_HTTP_PROXY_LISTEN
+            value: "localhost:1055"
+          - name: TS_ACCEPT_DNS
+            value: "false"
+    scale:
+      minReplicas: 0
+      maxReplicas: 3
+EOF
+```
+
+</details>
+
+<details class="use-case" markdown="1">
+<summary><strong>Full <code>app.yaml</code> — Option B: private registry (ACR)</strong></summary>
+
+Identical to Option A apart from the third secret and the `registries` block, which let
+Container Apps authenticate to the registry. The same shape works for a private GHCR image:
+use `ghcr.io` as the server, your GitHub username, and a token with `read:packages`.
+
+```bash
+cat > app.yaml <<EOF
+location: ${LOCATION}
+type: Microsoft.App/containerApps
+name: openclaw-bridge
+properties:
+  managedEnvironmentId: ${ENV_ID}
+  configuration:
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      targetPort: 8080
+      transport: auto
+      allowInsecure: false
+    secrets:
+      - name: tailscale-authkey
+        value: ${TS_AUTHKEY_VALUE}
+      - name: openclaw-webhook-secret
+        value: ${OPENCLAW_SECRET_VALUE}
+      - name: registry-password
+        value: ${ACR_PASSWORD}
+    registries:
+      - server: ${ACR_SERVER}
+        username: ${ACR_NAME}
+        passwordSecretRef: registry-password
+  template:
+    containers:
+      - name: bridge
+        image: ${IMAGE}
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: ADDR
+            value: ":8080"
+          - name: OPENCLAW_WEBHOOK_URL
+            value: "${OPENCLAW_URL}"
+          - name: OPENCLAW_SESSION_KEY
+            value: "agent:main:main"
+          - name: REQUEST_TIMEOUT_MS
+            value: "30000"
+          - name: TAILSCALE_ENABLED
+            value: "true"
+          - name: TAILSCALE_PROXY_ADDR
+            value: "127.0.0.1:1055"
+          - name: HTTP_PROXY
+            value: "http://localhost:1055"
+          - name: HTTPS_PROXY
+            value: "http://localhost:1055"
+          - name: NO_PROXY
+            value: "127.0.0.1,localhost"
+          - name: OPENCLAW_WEBHOOK_SECRET
+            secretRef: openclaw-webhook-secret
+      - name: tailscale
+        image: docker.io/tailscale/tailscale:stable
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        env:
+          - name: TS_AUTHKEY
+            secretRef: tailscale-authkey
+          - name: TS_HOSTNAME
+            value: "openclaw-bridge"
+          - name: TS_USERSPACE
+            value: "true"
+          - name: TS_KUBE_SECRET
+            value: ""
+          - name: TS_STATE_DIR
+            value: "/tmp/tailscale"
+          - name: TS_SOCKS5_SERVER
+            value: "localhost:1055"
+          - name: TS_OUTBOUND_HTTP_PROXY_LISTEN
+            value: "localhost:1055"
+          - name: TS_ACCEPT_DNS
+            value: "false"
+    scale:
+      minReplicas: 0
+      maxReplicas: 3
+EOF
+```
+
+</details>
+
+### The settings that matter
+
+| Setting | Why |
+|---|---|
+| `TS_USERSPACE: "true"` | Container Apps does not allow privileged containers, so Tailscale must run in userspace mode |
+| `TS_SOCKS5_SERVER` and `TS_OUTBOUND_HTTP_PROXY_LISTEN` | Open the local proxy on port 1055. Use these variables rather than passing the flags yourself — see the warning below |
+| `TS_KUBE_SECRET: ""` | The Tailscale image stores state in a Kubernetes secret by default. This is not Kubernetes, so turn that off |
+| `HTTP_PROXY` on the bridge | Tells the bridge to send its OpenClaw calls through the Tailscale container |
+| `cpu` and `memory` | On the Consumption plan the totals across **all** containers must be an allowed pair. Two containers at `0.25` / `0.5Gi` add up to `0.5` / `1.0Gi`, which is allowed |
+| `minReplicas: 0` | Scales to zero when idle, which is what keeps it free |
+
+#### A warning about Tailscale flags
+
+The Tailscale image has two different "extra flags" variables, and mixing them up is a common mistake:
+
+- `TS_EXTRA_ARGS` passes flags to **`tailscale up`**
+- `TS_TAILSCALED_EXTRA_ARGS` passes flags to **`tailscaled`**
+
+`--socks5-server` and `--outbound-http-proxy-listen` are `tailscaled` flags. Putting them in `TS_EXTRA_ARGS` sends them to the wrong program. This guide avoids the problem entirely by using the dedicated `TS_SOCKS5_SERVER` and `TS_OUTBOUND_HTTP_PROXY_LISTEN` variables.
+
+---
+
+### Step 5 — Deploy
+
+```bash
+az containerapp create \
+  --name openclaw-bridge \
+  --resource-group "$RESOURCE_GROUP" \
+  --yaml app.yaml
+```
+
+Get your public URL:
+
+```bash
+az containerapp show \
+  --name openclaw-bridge \
+  --resource-group "$RESOURCE_GROUP" \
+  --query 'properties.configuration.ingress.fqdn' -o tsv
+```
+
+It looks like:
+
+```text
+openclaw-bridge.politesky-1234abcd.eastus.azurecontainerapps.io
+```
+
+Once the app is running, delete `app.yaml` — it still contains your secrets in plain text:
+
+```bash
+rm app.yaml
+```
+
+#### Two settings that trip people up
+
+**`external: true` is required.**
+ChatGPT is on the public internet. With `external: false` the app is only reachable from inside the environment, and every ChatGPT call fails.
+The bridge is still protected, because OpenClaw only accepts calls carrying the webhook secret.
+
+**`OPENCLAW_WEBHOOK_URL` must not be `localhost`.**
+Go never sends requests for `localhost` or `127.0.0.1` through `HTTP_PROXY`, no matter how the proxy is configured.
+If you point the bridge at a loopback address it will quietly skip Tailscale and fail to reach OpenClaw.
+Always use the tailnet hostname or the `100.x.x.x` address.
+
+---
+
+### Step 6 — Test the bridge
+
+Save your URL first:
+
+```bash
+BRIDGE_URL="https://$(az containerapp show --name openclaw-bridge --resource-group "$RESOURCE_GROUP" --query 'properties.configuration.ingress.fqdn' -o tsv)"
+```
+
+#### Check the health page
+
+```bash
+curl "$BRIDGE_URL/healthz"
+```
+
+You should see a small JSON response.
+
+#### Check that Tailscale is connected
+
+```bash
+curl "$BRIDGE_URL/readyz"
+```
+
+This one is the real test. It returns `ok` only when the Tailscale container is answering on port 1055.
+If it says `tailscale proxy not ready`, your auth key is wrong or expired.
+
+#### Test the main API endpoint
+
+```bash
+curl -X POST "$BRIDGE_URL/v1/openclaw" \
+  -H 'content-type: application/json' \
+  --data '{"action":"create_flow","goal":"test"}'
+```
+
+If it works, the bridge is ready.
+
+#### If something fails
+
+Read the logs from each container separately:
+
+```bash
+az containerapp logs show --name openclaw-bridge --resource-group "$RESOURCE_GROUP" --container bridge --tail 50
+az containerapp logs show --name openclaw-bridge --resource-group "$RESOURCE_GROUP" --container tailscale --tail 50
+```
+
+The `bridge` container logs one line per request with `request_id`, `action`, `upstream_status`, and `duration_ms`.
+The `tailscale` container tells you whether it joined the tailnet.
+
+---
+
+### Step 7 — Add the action in Custom GPT
+
+In ChatGPT:
+
+1. Open **Explore GPTs**
+2. Create a new GPT, or edit an existing one
+3. Open **Actions**
+4. Click **Create new action**
+5. Import `openapi/openclaw-bridge.openapi.yaml`
+6. Change the `servers:` URL at the top of the schema to your Container Apps URL
+7. Save the GPT
+
+#### What must be public?
+
+Only the **bridge URL**. OpenClaw itself stays private behind Tailscale.
+
+---
+
+### About the cold start
+
+With `minReplicas: 0` the app stops when nobody is using it. That is what keeps it free.
+
+The next request has to start both containers and rejoin the tailnet before the bridge answers. Expect the **first request after a quiet period to take several seconds**. Requests after that are fast.
+
+If that first slow call ever causes a ChatGPT Action to time out, you have two options:
+
+- ask the same thing again, since the second call is fast, or
+- set `minReplicas: 1`, which keeps one copy running. Idle replicas are billed at a reduced rate, but this **will use up your free grant** and eventually cost money.
+
+---
+
+### Things that went wrong for us
+
+These are real failures from an actual deployment, in roughly the order they bite. If
+something is broken and you are not sure where to start, read this table first.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Revision deploys but the container never starts | The image is `arm64`; Azure Container Apps only runs `linux/amd64` | Build with `--platform linux/amd64` and confirm with `docker image inspect … --format '{{.Architecture}}'` before pushing |
+| Image pull fails on a brand new registry | New GitHub packages are **private** by default and Container Apps has no credentials | Set the package public, then verify an anonymous manifest fetch returns `200` |
+| Bridge returns `401` from OpenClaw | The secret changed but a process is still running with the old one | Two restarts are needed and they are independent: restart OpenClaw so it re-reads `.env`, **and** `az containerapp revision restart` so the container re-reads the Azure secret |
+| Secret looks identical but still fails | `cut -d= -f2` truncated the value at an `=` | Use `cut -d= -f2-`, and compare SHA-256 prefixes instead of reading values by eye |
+| `400 Unrecognized keys: "metadata", "sessionKey"` | Running an old bridge build | Upstream schemas are strict. Rebuild from a bridge that emits only the keys each action accepts |
+| Route `404`s even though the config looks right | The secret failed to resolve, so the plugin skipped the route | See [OpenClaw setup]({{ '/openclaw-setup.html' | relative_url }}) — compare your path against a deliberately fake one |
+| `/readyz` says `tailscale proxy not ready` | The Tailscale sidecar has not joined the tailnet | Check the auth key is ephemeral **and** reusable, and that it has not expired |
+| Everything works, then breaks after an idle period | Cold start | The first request after the app scales to zero has to restart Tailscale too. Retry once; if it matters, set `minReplicas: 1` and leave the free tier |
+
+#### The restart rule worth memorising
+
+Configuration hot-reloads. **Environment variables do not.** Any change to a secret means
+restarting whichever processes read it at startup — on both sides of the bridge.
+
+---
+
+### Final checklist
+
+- [ ] Azure subscription and `az` signed in
+- [ ] Tailscale ephemeral, reusable auth key created
+- [ ] Resource group and Container Apps environment created
+- [ ] Image built for `linux/amd64` and pushed
+- [ ] GHCR package set to **public** (anonymous manifest fetch returns `200`)
+- [ ] `app.yaml` written, deployed, and then deleted
+- [ ] Ingress is `external: true`
+- [ ] `/healthz` returns JSON
+- [ ] `/readyz` reports ready, proving Tailscale connected
+- [ ] `OPENCLAW_WEBHOOK_URL` uses a tailnet address, not localhost
+- [ ] Custom GPT action imported and pointed at the Container Apps URL
+
+### Short summary
+
+If you only remember one thing, remember this:
+
+- **ChatGPT talks to the free Container Apps URL**
+- **the bridge talks to OpenClaw through the Tailscale container on `localhost:1055`**
+- **OpenClaw does not need to be public, and you do not need a server or a domain**
